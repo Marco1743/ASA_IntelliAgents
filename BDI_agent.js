@@ -11,22 +11,90 @@ import { onlineSolver, Beliefset } from "@unitn-asa/pddl-client";
 
 const socket = DjsConnect();
 
-//true to use the external planner, false to use local code
-//local code is way faster and better. PDDL is required i think(?)
 const USE_PDDL = false; 
+
+class MinHeap {
+    constructor() { 
+        this.heap = []; 
+    }
+
+    push(node) {
+        this.heap.push(node);
+        this.bubbleUp(this.heap.length - 1);
+    }
+
+    pop() {
+        if (this.heap.length === 0) return null;
+        if (this.heap.length === 1) return this.heap.pop();
+        
+        const min = this.heap[0];
+        this.heap[0] = this.heap.pop();
+        this.sinkDown(0);
+        return min;
+    }
+
+    bubbleUp(index) {
+        const element = this.heap[index];
+        while (index > 0) {
+            let parentIndex = Math.floor((index - 1) / 2);
+            let parent = this.heap[parentIndex];
+            
+            if (element.f >= parent.f) break;
+            
+            this.heap[parentIndex] = element;
+            this.heap[index] = parent;
+            index = parentIndex;
+        }
+    }
+
+    sinkDown(index) {
+        const length = this.heap.length;
+        const element = this.heap[index];
+        while (true) {
+            let leftChildIdx = 2 * index + 1;
+            let rightChildIdx = 2 * index + 2;
+            let leftChild, rightChild;
+            let swap = null;
+
+            if (leftChildIdx < length) {
+                leftChild = this.heap[leftChildIdx];
+                if (leftChild.f < element.f) swap = leftChildIdx;
+            }
+            
+            if (rightChildIdx < length) {
+                rightChild = this.heap[rightChildIdx];
+                if (
+                    (swap === null && rightChild.f < element.f) || 
+                    (swap !== null && rightChild.f < leftChild.f)
+                ) {
+                    swap = rightChildIdx;
+                }
+            }
+            
+            if (swap === null) break;
+            
+            this.heap[index] = this.heap[swap];
+            this.heap[swap] = element;
+            index = swap;
+        }
+    }
+
+    isEmpty() { 
+        return this.heap.length === 0; 
+    }
+}
 
 // BELIEFS
 let myBeliefs = {
-    me: /** @type {any} */ ({ id: null, x: 0, y: 0, score: 0 }),
+    me: /** @type {any} */ ({ id: null, x: undefined, y: undefined, score: 0 }),
     map: new Map(),      
     parcels: new Map(),  
     deliveryZones: [],
     spawnZones: [],      
     agents: new Map(),
     obstacles: new Map(),
+    spawnActivity: new Map(),
     currentPlan: /** @type {any} */ (null),
-    
-    // rules config , these are defaults but the code update them with the server config if provided
     config: {
         capacity: 5,
         vision: 5,
@@ -34,10 +102,9 @@ let myBeliefs = {
     }
 };
 
-// connection to the server, to chose the server modify the .env file
 socket.on('connect', () => console.log("Connesso al server!"));
 socket.on('disconnect', () => console.log("Disconnesso dal server! In attesa di riconnessione..."));
-// update of game rules
+
 socket.on('config', (config) => {
     console.log("Ricevuta configurazione del server!");
     if (config.CLOCK) myBeliefs.config.clock = config.CLOCK;
@@ -49,9 +116,6 @@ socket.on('config', (config) => {
     console.log(`updated rules -> backpack: ${myBeliefs.config.capacity}, vision: ${myBeliefs.config.vision}, Clock: ${myBeliefs.config.clock}ms`);
 });
 
-// world perception
-
-//mpa structure
 socket.on('map', (width, height, tiles) => {
     console.log(`Map size: ${width}x${height}`);
     myBeliefs.deliveryZones = []; 
@@ -64,20 +128,26 @@ socket.on('map', (width, height, tiles) => {
         }
         if (String(t.type) === '1' || t.type === 'parcel-spawning') {
             myBeliefs.spawnZones.push({ x: t.x, y: t.y });
+            myBeliefs.spawnActivity.set(`${t.x},${t.y}`, Date.now());
         }
     });
+    
+    console.log(`deliveryZones: ${myBeliefs.deliveryZones.length}`);
 });
 
-// finding food
-socket.on('parcels sensing', (sensedParcels) => {
+// --- FUNZIONE PER I PACCHI ---
+const handleParcels = (sensedParcels) => {
+    if (sensedParcels && sensedParcels.length > 0) {
+        console.log(` sensed ${sensedParcels.length} parcels!`);
+    }
+
     const sensedIds = new Set();
     for (const p of sensedParcels) {
-        const raw = /** @type {any} */ (p);
-        const parcelObj = raw.parcel || raw;
+        const raw = p;
+        const parcelObj = raw.parcel || raw; 
         if (parcelObj.id) sensedIds.add(parcelObj.id);
     }
 
-    // clean up of parcerls that were in beliefs but ar no more visible
     if (myBeliefs.me.x !== undefined) {
         for (let [id, p] of myBeliefs.parcels.entries()) {
             if (p.carriedBy !== myBeliefs.me.id) {
@@ -89,41 +159,62 @@ socket.on('parcels sensing', (sensedParcels) => {
         }
     }
 
-    // food belief update
     for (const p of sensedParcels) {
-        const raw = /** @type {any} */ (p);
+        const raw = p;
         const parcelObj = raw.parcel || raw;
         const id = parcelObj.id;
         
         if (id) {
             myBeliefs.parcels.set(id, { 
-                id: id, 
-                x: raw.x, 
-                y: raw.y, 
+                id: id,
+                x: raw.x !== undefined ? raw.x : parcelObj.x, 
+                y: raw.y !== undefined ? raw.y : parcelObj.y, 
                 reward: parcelObj.reward,
                 carriedBy: parcelObj.carriedBy 
             });
+            const key = `${myBeliefs.parcels.get(id).x},${myBeliefs.parcels.get(id).y}`;
+            if (myBeliefs.spawnActivity.has(key)) {
+                myBeliefs.spawnActivity.set(key, Date.now());
+            }
         }
     }
-});
+};
+
+// slides vs server
+socket.on('parcelsSensing', handleParcels);
+socket.on('parcels sensing', handleParcels);
+
 
 // enemies perception
-socket.on('agents sensing', (sensedAgents) => {
+const handleAgents = (sensedAgents) => {
     myBeliefs.agents.clear();
     for (const a of sensedAgents) {
         if (a.id !== myBeliefs.me.id) {
             myBeliefs.agents.set(a.id, a);
         }
     }
-});
+};
 
-// self perception
+
+//sides and server seems to differ in naming events
+socket.on('agentsSensing', handleAgents);
+socket.on('agents sensing', handleAgents);
+
+// self perception 
 socket.on('you', (me) => {
     myBeliefs.me = me;
 });
 
+async function resilientMove(direction, maxRetries = 3) {
+    for (let i = 0; i < maxRetries; i++) {
+        const result = await socket.emitMove(direction); 
+        if (result) return result; 
+        await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    await socket.emitShout(`Help! Blocked trying to move ${direction}`); 
+    return false;
+}
 
-// agent loop
 async function agentLoop() {
     console.log("starting agent...");
 
@@ -131,17 +222,19 @@ async function agentLoop() {
         await new Promise(res => setTimeout(res, 100));
     }
 
+    console.log(">>> [DEBUG] Dati iniziali corretti! L'agente si sblocca e inizia a pensare.");
+
+    let silentWaitCounter = 0;
+
     while (true) {
         try {
             await new Promise(res => setTimeout(res, myBeliefs.config.clock)); 
 
-            // to avoid issues of server desynch, we wait to be centred in a tile before going on
             const isCentered = Math.abs(myBeliefs.me.x - Math.round(myBeliefs.me.x)) <= 0.1 && 
                                Math.abs(myBeliefs.me.y - Math.round(myBeliefs.me.y)) <= 0.1;
 
             if (!isCentered) continue; 
 
-            // cleaup of dynamic obstacles, remove after 3 seonds but we could maybe adjust it to be dynamic 
             const now = Date.now();
             for (let [key, timestamp] of myBeliefs.obstacles.entries()) {
                 if (now - timestamp > 3000) { 
@@ -152,37 +245,79 @@ async function agentLoop() {
             let target = null;
             let intention = null;
 
-            // DESIRE & INTENTION
             const myCarriedParcels = Array.from(myBeliefs.parcels.values())
                                             .filter(p => p.carriedBy === myBeliefs.me.id);
 
-            // if the plan is not finished we carry on
             if (myBeliefs.currentPlan && myBeliefs.currentPlan.steps.length > 0) {
                 const tId = myBeliefs.currentPlan.targetId;
                 
                 if (tId === 'delivery') {
-                    // we are ging to delivery
                     target = getClosest(myBeliefs.me, myBeliefs.deliveryZones);
                     intention = 'deliver';
                 } else if (tId.startsWith('p')) {
-                    // we are going to pick up food, we have to check it still exists
                     let plannedParcel = myBeliefs.parcels.get(tId);
                     if (plannedParcel && !plannedParcel.carriedBy) {
                         target = plannedParcel;
                         intention = 'pickup';
                     } else {
-                        // if the package has been picked up by someone else or is no more, we have to replan
                         myBeliefs.currentPlan = null;
                     }
                 }
             }
 
-            // if we do not have a target yet or our plan has failed
+            if (myBeliefs.currentPlan && intention === 'pickup' && target) {
+                let shouldInvalidate = false;
+                const plannedParcel = myBeliefs.parcels.get(target.id);
+
+                // 1. STOLEN PARCEL CHECK
+                if (!plannedParcel || (plannedParcel.carriedBy && plannedParcel.carriedBy !== myBeliefs.me.id)) {
+                    console.log(`>>> [RECALC] Oh no! Target ${target.id} was taken or vanished. Aborting plan.`);
+                    shouldInvalidate = true;
+                } else {
+                    // 2. BETTER OPPORTUNITY CHECK
+                    const bestAvailable = getBestParcel();
+                    
+                    if (bestAvailable && bestAvailable.id !== target.id) {
+                        let currentDistToTarget = getDistance(myBeliefs.me, plannedParcel);
+                        if (currentDistToTarget === 0) currentDistToTarget = 0.1;
+                        let currentClosestDel = getClosest(plannedParcel, myBeliefs.deliveryZones);
+                        let currentDistToDel = getDistance(plannedParcel, currentClosestDel);
+                        let currentScore = plannedParcel.reward / (currentDistToTarget + currentDistToDel);
+
+                        let bestDistToTarget = getDistance(myBeliefs.me, bestAvailable);
+                        if (bestDistToTarget === 0) bestDistToTarget = 0.1;
+                        let bestClosestDel = getClosest(bestAvailable, myBeliefs.deliveryZones);
+                        let bestDistToDel = getDistance(bestAvailable, bestClosestDel);
+                        let bestScore = bestAvailable.reward / (bestDistToTarget + bestDistToDel);
+
+                        // SOFT COMMITMENT LOGIC, we change target only if the new one is reeally better
+                        let commitmentMultiplier = 1.3;
+                        
+                        if (currentDistToTarget <= 2) {
+                            commitmentMultiplier = 2.5;
+                        } else if (currentDistToTarget <= 5) {
+                            commitmentMultiplier = 1.6;
+                        }
+
+                        if (bestScore > (currentScore * commitmentMultiplier)) {
+                            console.log(`>>> [RECALC] Shiny new parcel spotted (${bestAvailable.id})! E' migliore di un fattore ${commitmentMultiplier}. Cambio target!`);
+                            shouldInvalidate = true;
+                        }
+                    }
+                }
+
+                // Execute the invalidation
+                if (shouldInvalidate) {
+                    myBeliefs.currentPlan = null;
+                    target = null;
+                    intention = null;
+                }
+            }
+
             if (!target) {
                 let bestFreeParcel = getBestParcel();
                 let closestDelivery = getClosest(myBeliefs.me, myBeliefs.deliveryZones);
 
-                // decision logic of target
                 if (myCarriedParcels.length >= myBeliefs.config.capacity || (myCarriedParcels.length > 0 && !bestFreeParcel)) {
                     target = closestDelivery;
                     intention = 'deliver';
@@ -190,28 +325,32 @@ async function agentLoop() {
                     target = bestFreeParcel;
                     intention = 'pickup';
                 } else if (myBeliefs.spawnZones.length > 0) {
-                    target = getClosest(myBeliefs.me, myBeliefs.spawnZones);
+                    target = getBestSpawnZone();
                     intention = 'patrol';
                 }
             }
-            // once we have a target
+
+            // no objective situation: wait and hope for a spawn or a new parcel to appear
+            if (!target) {
+                if (silentWaitCounter % 20 === 0) { // Stampa un log circa ogni secondo
+                    console.log("no parcel nor spwning zone, wait and hope...");
+                }
+                silentWaitCounter++;
+                await new Promise(resolve => setTimeout(resolve, 50));
+                continue;
+            }
+
             if (target) {
                 const targetId = intention === 'pickup' ? target.id : (intention === 'deliver' ? 'delivery' : 'patrol');
 
-                // we generate a plan
-                // we generate a plan
                 if (!myBeliefs.currentPlan || myBeliefs.currentPlan.targetId !== targetId || myBeliefs.currentPlan.steps.length === 0) {
                     let newPlan;
                     
                     if (USE_PDDL) {
-                        // if we put this to true we use the external planner
-                        console.log(`generating a PDDL plan to ${intention}...`);
                         newPlan = await generatePddlPlan(myBeliefs.me, target, intention);
                     } else {
-                        newPlan = generateBfsPlan(myBeliefs.me, target);
+                        newPlan = generateAStarPlan(myBeliefs.me, target);
                         
-                        // FIX CRITICO: Il BFS calcola solo il percorso spaziale. 
-                        // Dobbiamo appendere l'azione finale al piano se necessario!
                         if (newPlan !== null) {
                             if (intention === 'pickup') {
                                 newPlan.push('pick_up');
@@ -221,32 +360,37 @@ async function agentLoop() {
                         }
                     }
 
-                    // update our plan
                     if (newPlan !== null) {
-                        if (newPlan.length === 0) {
-                            // Se il piano è vuoto, significa che siamo GIÀ esattamente sul target.
-                            // Ad esempio: stiamo pattugliando e siamo già sulla zona di spawn.
-                            // Mettiamo il loop in pausa per mezzo secondo per aspettare che appaia qualcosa.
+                        // already on target
+                    if (newPlan.length === 0) {
+                        if (intention === 'patrol') {
+                            console.log(`nothing to do, patrolling...`);
+                            await emitRandomMove();
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            continue;
+                        } else {
+                            if (silentWaitCounter % 10 === 0) {
+                            }
+                            silentWaitCounter++;
                             await new Promise(resolve => setTimeout(resolve, 500));
                             continue;
                         }
+                    }
                         
-                        console.log(`Piano generato con successo per ${intention}!`);
+                        console.log(`Piano generato per ${intention}! Passi: ${newPlan}`);
                         myBeliefs.currentPlan = { targetId: targetId, steps: newPlan };
+                        silentWaitCounter = 0;
                     } else {
-                        // if we cannot find a plan we mark it as an obstacle
-                        console.log(`Target irraggiungibile per ${intention}, marco come ostacolo.`);
+                        console.log(`Target irraggiungibile per ${intention}, marco ostacolo e sblocco.`);
                         myBeliefs.currentPlan = null;
                         myBeliefs.obstacles.set(`${Math.round(target.x)},${Math.round(target.y)}`, Date.now());
                         
-                        // ANTI-STALLO: Facciamo un passo casuale per uscire da un possibile "vicolo cieco"
                         await emitRandomMove();
                         await new Promise(res => setTimeout(res, 500));
                         continue;
                     }
                 }
 
-                // executing the plan
                 const nextAction = myBeliefs.currentPlan.steps[0];
                 let success = false;
 
@@ -264,18 +408,48 @@ async function agentLoop() {
                     success = true;
                     await new Promise(resolve => setTimeout(resolve, 100));
                 } else {
-                    success = await socket.emitMove(nextAction); 
+                    let targetX = Math.round(myBeliefs.me.x);
+                    let targetY = Math.round(myBeliefs.me.y);
+                    if (nextAction === 'up') targetY += 1;
+                    if (nextAction === 'down') targetY -= 1;
+                    if (nextAction === 'left') targetX -= 1;
+                    if (nextAction === 'right') targetX += 1;
+
+                    let isAgentBlocking = false;
+                    for (const agent of myBeliefs.agents.values()) {
+                        if (Math.round(agent.x) === targetX && Math.round(agent.y) === targetY) {
+                            isAgentBlocking = true;
+                            break;
+                        }
+                    }
+
+                    if (isAgentBlocking) {
+                        if (myBeliefs.currentPlan.stuckCount === undefined) myBeliefs.currentPlan.stuckCount = 0;
+                        myBeliefs.currentPlan.stuckCount++;
+
+                        if (myBeliefs.currentPlan.stuckCount > 4) {
+                            console.log(`>>> [BLOCKED] Agente fermo da troppo tempo. Ricalcolo...`);
+                            myBeliefs.obstacles.set(`${targetX},${targetY}`, Date.now());
+                            myBeliefs.currentPlan = null;
+                        } else {
+                            console.log(`enemy ahead. waiting...`);
+                            await new Promise(resolve => setTimeout(resolve, 300));
+                        }
+                        continue; 
+                    }
+
+                    if (myBeliefs.currentPlan) myBeliefs.currentPlan.stuckCount = 0;
+                    
+                    success = await resilientMove(nextAction); 
                 }
 
                 if (success) {
                     myBeliefs.currentPlan.steps.shift();
                 } else {
-                    // if the plan fails we calculate a new one
-                    console.log(`plan failed, ${nextAction}. recalculating...`);
+                    console.log(`Mossa fallita: ${nextAction}. Ricalcolo...`);
                     myBeliefs.currentPlan = null; 
                     
-                    // logic to save dynamic obstacles found
-                    if (nextAction !== 'pick_up') {
+                    if (nextAction !== 'pick_up' && nextAction !== 'put_down') {
                         let ox = Math.round(myBeliefs.me.x);
                         let oy = Math.round(myBeliefs.me.y);
                         if (nextAction === 'up') oy += 1;
@@ -289,16 +463,13 @@ async function agentLoop() {
             }
             
         } catch (error) {
-            // problems with the server
-            console.log(`(${error.message}). retrying...`);
+            console.log(`Errore nel loop (${error.message}). Ritento...`);
             await new Promise(res => setTimeout(res, 1000));
         }
     }
 }
 
-
-
-// planning (BFS)(lab 4)
+// possible bfs, switched to A* tho
 function generateBfsPlan(start, target) {
     const startX = Math.round(start.x);
     const startY = Math.round(start.y);
@@ -353,125 +524,85 @@ function generateBfsPlan(start, target) {
     return null;
 }
 
+function generateAStarPlan(start, target) {
+    const startX = Math.round(start.x);
+    const startY = Math.round(start.y);
+    const targetX = Math.round(target.x);
+    const targetY = Math.round(target.y);
 
-//planning external planner
-const pddlDomainStr = `(define (domain deliveroo)
-    (:requirements :strips)
-    (:predicates
-        (at ?t)
-        (right ?t1 ?t2)
-        (left ?t1 ?t2)
-        (up ?t1 ?t2)
-        (down ?t1 ?t2)
-        (at-parcel ?p ?t)
-        (carried ?p)
-        (handsfree)
-        (delivery-zone ?t)
-    )
-    (:action move_right
-        :parameters (?from ?to)
-        :precondition (and (at ?from) (right ?from ?to))
-        :effect (and (at ?to) (not (at ?from)))
-    )
-    (:action move_left
-        :parameters (?from ?to)
-        :precondition (and (at ?from) (left ?from ?to))
-        :effect (and (at ?to) (not (at ?from)))
-    )
-    (:action move_up
-        :parameters (?from ?to)
-        :precondition (and (at ?from) (up ?from ?to))
-        :effect (and (at ?to) (not (at ?from)))
-    )
-    (:action move_down
-        :parameters (?from ?to)
-        :precondition (and (at ?from) (down ?from ?to))
-        :effect (and (at ?to) (not (at ?from)))
-    )
-    (:action pick_up
-        :parameters (?t ?p)
-        :precondition (and (at ?t) (at-parcel ?p ?t) (handsfree))
-        :effect (and (not (at-parcel ?p ?t)) (not (handsfree)) (carried ?p))
-    )
-    (:action put_down
-        :parameters (?t)
-        :precondition (and (at ?t) (delivery-zone ?t) (not (handsfree)))
-        :effect (handsfree)
-    )
-)`;
+    // Heuristic: Manhattan Distance
+    const getHeuristic = (x, y) => Math.abs(x - targetX) + Math.abs(y - targetY);
 
-async function generatePddlPlan(start, target, intention) {
-    try {
-        const myBeliefset = new Beliefset();
-        const startX = Math.round(start.x);
-        const startY = Math.round(start.y);
-        const targetX = Math.round(target.x);
-        const targetY = Math.round(target.y);
+    const openSet = new MinHeap();
+    openSet.push({ 
+        x: startX, 
+        y: startY, 
+        g: 0, 
+        f: getHeuristic(startX, startY), 
+        path: [] 
+    });
 
-        myBeliefset.declare(`at t_${startX}_${startY}`);
+    //keeps track of the cheapest path found so far to any given tile
+    const gScores = new Map();
+    gScores.set(`${startX},${startY}`, 0);
 
-        const myCarriedParcels = Array.from(myBeliefs.parcels.values()).filter(p => p.carriedBy === myBeliefs.me.id);
-        if (myCarriedParcels.length === 0) {
-            myBeliefset.declare(`handsfree`);
-        }
-
-        for (let [key, type] of myBeliefs.map.entries()) {
-            if (String(type) === '0' || myBeliefs.obstacles.has(key)) continue;
-
-            let [x, y] = key.split(',').map(Number);
-            let rightKey = `${x+1},${y}`;
-            if (myBeliefs.map.has(rightKey) && String(myBeliefs.map.get(rightKey)) !== '0' && !myBeliefs.obstacles.has(rightKey)) {
-                myBeliefset.declare(`right t_${x}_${y} t_${x+1}_${y}`);
-                myBeliefset.declare(`left t_${x+1}_${y} t_${x}_${y}`);
-            }
-            let upKey = `${x},${y+1}`;
-            if (myBeliefs.map.has(upKey) && String(myBeliefs.map.get(upKey)) !== '0' && !myBeliefs.obstacles.has(upKey)) {
-                myBeliefset.declare(`up t_${x}_${y} t_${x}_${y+1}`);
-                myBeliefset.declare(`down t_${x}_${y+1} t_${x}_${y}`);
-            }
-
-            if (String(type) === '2' || type === 'delivery') {
-                myBeliefset.declare(`delivery-zone t_${x}_${y}`);
-            }
-        }
-
-        let pddlGoalStr = "";
-
-        if (intention === 'pickup') {
-            myBeliefset.declare(`at-parcel p_${target.id} t_${targetX}_${targetY}`);
-            pddlGoalStr = `(:goal (and (carried p_${target.id})))`;
-        } else if (intention === 'deliver') {
-            pddlGoalStr = `(:goal (and (handsfree)))`;
-        } else {
-            pddlGoalStr = `(:goal (and (at t_${targetX}_${targetY})))`;
-        }
-
-        const pddlProblemStr = `(define (problem deliveroo_prob)
-            (:domain deliveroo)
-            (:objects ${myBeliefset.objects.join(' ')})
-            (:init ${myBeliefset.toPddlString()})
-            ${pddlGoalStr}
-        )`;
-
-        console.log("⏳ Chiamata al PDDL online solver in corso...");
-        const rawPlan = await onlineSolver(pddlDomainStr, pddlProblemStr);
+    //Loop until the heap is empty
+    while (!openSet.isEmpty()) {
         
-        if (rawPlan && !rawPlan.error && Array.isArray(rawPlan)) {
-            const steps = rawPlan.map(step => step.action.toLowerCase().replace('move_', ''));
-            console.log("obtained plan:", steps);
-            return steps;
-        } else {
-            console.log("the external planner has not found a solution.");
-            return null;
+        const current = openSet.pop();
+
+        if (current.x === targetX && current.y === targetY) {
+            return current.path;
         }
-    } catch (e) {
-        console.error("Error API PDDL:", e.message);
-        return null;
+
+        const dirs = [
+            { dir: 'up', dx: 0, dy: 1 }, { dir: 'down', dx: 0, dy: -1 },
+            { dir: 'right', dx: 1, dy: 0 }, { dir: 'left', dx: -1, dy: 0 }
+        ];
+
+        for (let d of dirs) {
+            const nx = current.x + d.dx;
+            const ny = current.y + d.dy;
+            const key = `${nx},${ny}`;
+
+            if (myBeliefs.obstacles.has(key)) continue; 
+
+            const tileType = myBeliefs.map.get(key);
+            if (tileType === undefined || String(tileType) === '0') continue;
+
+            let isOccupiedByAgent = false;
+            for (const agent of myBeliefs.agents.values()) {
+                if (Math.round(agent.x) === nx && Math.round(agent.y) === ny) {
+                    if (!(nx === targetX && ny === targetY)) {
+                        isOccupiedByAgent = true;
+                        break;
+                    }
+                }
+            }
+
+            const stepCost = isOccupiedByAgent ? 15 : 1;
+
+            const tentativeG = current.g + stepCost;
+
+            if (!gScores.has(key) || tentativeG < gScores.get(key)) {
+                gScores.set(key, tentativeG);
+                
+                const fScore = tentativeG + getHeuristic(nx, ny);
+                
+                openSet.push({ 
+                    x: nx, 
+                    y: ny, 
+                    g: tentativeG, 
+                    f: fScore, 
+                    path: [...current.path, d.dir] 
+                });
+            }
+        }
     }
+    
+    return null;
 }
 
-
-//utils
 function getDistance(pos1, pos2) {
     if (!pos1 || !pos2) return Infinity;
     return Math.abs(Math.round(pos1.x) - Math.round(pos2.x)) + Math.abs(Math.round(pos1.y) - Math.round(pos2.y));
@@ -490,18 +621,75 @@ function getClosest(pos, locations) {
     return closest;
 }
 
+function getBestSpawnZone() {
+    if (myBeliefs.spawnZones.length === 0) return null;
+
+    let bestZone = null;
+    let bestScore = Infinity; 
+
+    const now = Date.now();
+
+    for (const zone of myBeliefs.spawnZones) {
+        let distToZone = getDistance(myBeliefs.me, zone);
+        
+        let opponentsNearby = 0;
+        for (const agent of myBeliefs.agents.values()) {
+            if (getDistance(zone, agent) <= 4) { 
+                opponentsNearby++;
+            }
+        }
+
+        const lastActivity = myBeliefs.spawnActivity.get(`${zone.x},${zone.y}`) || now;
+        const timeSinceActivity = now - lastActivity;
+
+        let dueBonus = Math.min(timeSinceActivity / 1000, 20);
+
+        let penaltyWeight = 15; 
+        let score = distToZone + (opponentsNearby * penaltyWeight)- dueBonus;
+
+        if (score < bestScore) {
+            bestScore = score;
+            bestZone = zone;
+        }
+    }
+
+    return bestZone;
+}
+
 function getBestParcel() {
     let best = null;
     let bestScore = -Infinity;
 
+    const myCarriedParcels = Array.from(myBeliefs.parcels.values())
+                                  .filter(p => p.carriedBy === myBeliefs.me.id);
+    const isCarrying = myCarriedParcels.length > 0;
+    
+    const targetDeliveryZone = getClosest(myBeliefs.me, myBeliefs.deliveryZones);
+
     for (let p of myBeliefs.parcels.values()) {
         if (p.carriedBy) continue;
 
-        let distance = getDistance(myBeliefs.me, p);
+        let distToParcel = getDistance(myBeliefs.me, p);
+        if (distToParcel === 0) distToParcel = 0.1;
 
-        if (distance === 0) distance = 0.1;
+        let currentScore;
 
-        let currentScore = p.reward / distance;
+        if (isCarrying && targetDeliveryZone) {
+
+            let directPath = getDistance(myBeliefs.me, targetDeliveryZone);
+            let pathWithDetour = getDistance(myBeliefs.me, p) + getDistance(p, targetDeliveryZone);
+            
+            let detourCost = pathWithDetour - directPath;
+            
+            if (detourCost <= 0) detourCost = 0.1;
+
+            currentScore = p.reward / detourCost;
+
+        } else {
+            let closestDelivery = getClosest(p, myBeliefs.deliveryZones);
+            let distToDelivery = getDistance(p, closestDelivery);
+            currentScore = p.reward / (distToParcel + distToDelivery);
+        }
 
         if (!best || currentScore > bestScore) {
             best = p;
@@ -511,7 +699,6 @@ function getBestParcel() {
     return best;
 }
 
-//if we are stuck
 async function emitRandomMove() {
     /** @type {Array<'up'|'down'|'left'|'right'>} */
     const dirs = ['up', 'down', 'left', 'right'];
