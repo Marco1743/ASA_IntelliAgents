@@ -199,24 +199,49 @@ async function agentLoop() {
                 const targetId = intention === 'pickup' ? target.id : (intention === 'deliver' ? 'delivery' : 'patrol');
 
                 // we generate a plan
+                // we generate a plan
                 if (!myBeliefs.currentPlan || myBeliefs.currentPlan.targetId !== targetId || myBeliefs.currentPlan.steps.length === 0) {
-                    console.log(`generating a plan to ${intention}...`);
                     let newPlan;
                     
                     if (USE_PDDL) {
-                        // if we put this to true we use the external planner, it is really slow and kinda "dumb" as for now, probably can retrieve better plans if we pass better target intentions
+                        // if we put this to true we use the external planner
+                        console.log(`generating a PDDL plan to ${intention}...`);
                         newPlan = await generatePddlPlan(myBeliefs.me, target, intention);
                     } else {
                         newPlan = generateBfsPlan(myBeliefs.me, target);
+                        
+                        // FIX CRITICO: Il BFS calcola solo il percorso spaziale. 
+                        // Dobbiamo appendere l'azione finale al piano se necessario!
+                        if (newPlan !== null) {
+                            if (intention === 'pickup') {
+                                newPlan.push('pick_up');
+                            } else if (intention === 'deliver') {
+                                newPlan.push('put_down');
+                            }
+                        }
                     }
 
-                    //update our plan
-                    if (newPlan && newPlan.length > 0) {
+                    // update our plan
+                    if (newPlan !== null) {
+                        if (newPlan.length === 0) {
+                            // Se il piano è vuoto, significa che siamo GIÀ esattamente sul target.
+                            // Ad esempio: stiamo pattugliando e siamo già sulla zona di spawn.
+                            // Mettiamo il loop in pausa per mezzo secondo per aspettare che appaia qualcosa.
+                            await new Promise(resolve => setTimeout(resolve, 500));
+                            continue;
+                        }
+                        
+                        console.log(`Piano generato con successo per ${intention}!`);
                         myBeliefs.currentPlan = { targetId: targetId, steps: newPlan };
                     } else {
-                        // if we cannot find a plan we mark it as an obstacle in order to avoid trying to rach it for a while
+                        // if we cannot find a plan we mark it as an obstacle
+                        console.log(`Target irraggiungibile per ${intention}, marco come ostacolo.`);
                         myBeliefs.currentPlan = null;
                         myBeliefs.obstacles.set(`${Math.round(target.x)},${Math.round(target.y)}`, Date.now());
+                        
+                        // ANTI-STALLO: Facciamo un passo casuale per uscire da un possibile "vicolo cieco"
+                        await emitRandomMove();
+                        await new Promise(res => setTimeout(res, 500));
                         continue;
                     }
                 }
