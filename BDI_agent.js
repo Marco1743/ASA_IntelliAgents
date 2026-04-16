@@ -88,12 +88,16 @@ class MinHeap {
 let myBeliefs = {
     me: /** @type {any} */ ({ id: null, x: undefined, y: undefined, score: 0 }),
     map: new Map(),      
+    mapWidth: 0,
+    mapHeight: 0,
     parcels: new Map(),  
     deliveryZones: [],
     spawnZones: [],      
     agents: new Map(),
     obstacles: new Map(),
+    blacklistedTargets: new Map(),
     spawnActivity: new Map(),
+    lastChecked: new Map(),
     currentPlan: /** @type {any} */ (null),
     config: {
         capacity: 5,
@@ -102,11 +106,11 @@ let myBeliefs = {
     }
 };
 
-socket.on('connect', () => console.log("Connesso al server!"));
-socket.on('disconnect', () => console.log("Disconnesso dal server! In attesa di riconnessione..."));
+socket.on('connect', () => console.log("connected to server"));
+socket.on('disconnect', () => console.log("disconnected from server! waiting for reconnection..."));
 
 socket.on('config', (config) => {
-    console.log("Ricevuta configurazione del server!");
+    console.log("received server configuration");
     if (config.CLOCK) myBeliefs.config.clock = config.CLOCK;
     
     const playerConfig = (config.GAME && config.GAME.player) || config.PLAYER || {};
@@ -120,6 +124,8 @@ socket.on('map', (width, height, tiles) => {
     console.log(`Map size: ${width}x${height}`);
     myBeliefs.deliveryZones = []; 
     myBeliefs.spawnZones = [];
+    myBeliefs.mapWidth = width;
+    myBeliefs.mapHeight = height;
     
     tiles.forEach(t => {
         myBeliefs.map.set(`${t.x},${t.y}`, t.type);
@@ -135,7 +141,7 @@ socket.on('map', (width, height, tiles) => {
     console.log(`deliveryZones: ${myBeliefs.deliveryZones.length}`);
 });
 
-// --- FUNZIONE PER I PACCHI ---
+// parcels
 const handleParcels = (sensedParcels) => {
     if (sensedParcels && sensedParcels.length > 0) {
         console.log(` sensed ${sensedParcels.length} parcels!`);
@@ -180,7 +186,7 @@ const handleParcels = (sensedParcels) => {
     }
 };
 
-// slides vs server
+// slides vs server, sides and server seems to differ in naming events
 socket.on('parcelsSensing', handleParcels);
 socket.on('parcels sensing', handleParcels);
 
@@ -196,7 +202,7 @@ const handleAgents = (sensedAgents) => {
 };
 
 
-//sides and server seems to differ in naming events
+// slides vs server, sides and server seems to differ in naming events
 socket.on('agentsSensing', handleAgents);
 socket.on('agents sensing', handleAgents);
 
@@ -211,8 +217,29 @@ async function resilientMove(direction, maxRetries = 3) {
         if (result) return result; 
         await new Promise(resolve => setTimeout(resolve, 500));
     }
-    await socket.emitShout(`Help! Blocked trying to move ${direction}`); 
+    await socket.emitShout(` Blocked trying to move ${direction}`); 
     return false;
+}
+
+function getRandomWalkableTile() {
+    const walkableTiles = [];
+    
+    // We use the vision config dynamically
+    const visionRange = myBeliefs.config.vision || 5;
+
+    for (let [key, type] of myBeliefs.map.entries()) {
+        if (String(type) !== '0') {
+            const [x, y] = key.split(',').map(Number);
+            
+            if (getDistance(myBeliefs.me, {x, y}) > visionRange) {
+                walkableTiles.push({ x, y, id: `explore_${x}_${y}` }); 
+            }
+        }
+    }
+    
+    if (walkableTiles.length === 0) return null;
+    
+    return walkableTiles[Math.floor(Math.random() * walkableTiles.length)];
 }
 
 async function agentLoop() {
@@ -222,7 +249,7 @@ async function agentLoop() {
         await new Promise(res => setTimeout(res, 100));
     }
 
-    console.log(">>> [DEBUG] Dati iniziali corretti! L'agente si sblocca e inizia a pensare.");
+    console.log(">>> initial data OK! agent starting...");
 
     let silentWaitCounter = 0;
 
@@ -236,6 +263,13 @@ async function agentLoop() {
             if (!isCentered) continue; 
 
             const now = Date.now();
+            myBeliefs.lastChecked = myBeliefs.lastChecked || new Map();
+            for (const zone of myBeliefs.spawnZones) {
+                // Se la zona di spawn è nel nostro campo visivo, registriamo di averla vista ORA
+                if (getDistance(myBeliefs.me, zone) <= myBeliefs.config.vision) {
+                    myBeliefs.lastChecked.set(`${zone.x},${zone.y}`, now);
+                }
+            }
             for (let [key, timestamp] of myBeliefs.obstacles.entries()) {
                 if (now - timestamp > 3000) { 
                     myBeliefs.obstacles.delete(key);
@@ -246,14 +280,17 @@ async function agentLoop() {
             let intention = null;
 
             const myCarriedParcels = Array.from(myBeliefs.parcels.values())
-                                            .filter(p => p.carriedBy === myBeliefs.me.id);
+                                          .filter(p => p.carriedBy === myBeliefs.me.id);
 
-            if (myBeliefs.currentPlan && myBeliefs.currentPlan.steps.length > 0) {
+           if (myBeliefs.currentPlan && myBeliefs.currentPlan.steps.length > 0) {
                 const tId = myBeliefs.currentPlan.targetId;
                 
                 if (tId === 'delivery') {
                     target = getClosest(myBeliefs.me, myBeliefs.deliveryZones);
                     intention = 'deliver';
+                } else if (tId === 'patrol' || tId === 'explore') {
+                    target = myBeliefs.currentPlan.target;
+                    intention = tId;
                 } else if (tId.startsWith('p')) {
                     let plannedParcel = myBeliefs.parcels.get(tId);
                     if (plannedParcel && !plannedParcel.carriedBy) {
@@ -265,19 +302,26 @@ async function agentLoop() {
                 }
             }
 
-            if (myBeliefs.currentPlan && intention === 'pickup' && target) {
-                let shouldInvalidate = false;
-                const plannedParcel = myBeliefs.parcels.get(target.id);
+            //soft commitment
+            let shouldInvalidate = false;
+            const bestAvailable = getBestParcel();
 
-                // 1. STOLEN PARCEL CHECK
-                if (!plannedParcel || (plannedParcel.carriedBy && plannedParcel.carriedBy !== myBeliefs.me.id)) {
-                    console.log(`>>> [RECALC] Oh no! Target ${target.id} was taken or vanished. Aborting plan.`);
+            if (bestAvailable) {
+                if (intention === 'explore' || intention === 'patrol' || intention === null) {
+                    // Abbandona subito l'esplorazione se vedi un pacco!
+                    console.log(`>>> Pacco avvistato (${bestAvailable.id})! Interrompo ${intention || 'attesa'}.`);
                     shouldInvalidate = true;
-                } else {
-                    // 2. BETTER OPPORTUNITY CHECK
-                    const bestAvailable = getBestParcel();
+                } else if (myBeliefs.currentPlan && intention === 'pickup' && target) {
+                    let plannedParcel = myBeliefs.parcels.get(target.id);
                     
-                    if (bestAvailable && bestAvailable.id !== target.id) {
+                    if (!plannedParcel || (plannedParcel.carriedBy && plannedParcel.carriedBy !== myBeliefs.me.id)) {
+                        console.log(`>>> Target ${target.id} was taken or vanished. Aborting plan.`);
+                        shouldInvalidate = true;
+                    } else if (bestAvailable.id !== target.id) {
+                        // Logica Dinamica: calcola i range in base alla visione
+                        const closeRange = Math.max(2, Math.floor(myBeliefs.config.vision * 0.4));
+                        const midRange = myBeliefs.config.vision;
+
                         let currentDistToTarget = getDistance(myBeliefs.me, plannedParcel);
                         if (currentDistToTarget === 0) currentDistToTarget = 0.1;
                         let currentClosestDel = getClosest(plannedParcel, myBeliefs.deliveryZones);
@@ -290,180 +334,179 @@ async function agentLoop() {
                         let bestDistToDel = getDistance(bestAvailable, bestClosestDel);
                         let bestScore = bestAvailable.reward / (bestDistToTarget + bestDistToDel);
 
-                        // SOFT COMMITMENT LOGIC, we change target only if the new one is reeally better
                         let commitmentMultiplier = 1.3;
-                        
-                        if (currentDistToTarget <= 2) {
+                        if (currentDistToTarget <= closeRange) {
                             commitmentMultiplier = 2.5;
-                        } else if (currentDistToTarget <= 5) {
+                        } else if (currentDistToTarget <= midRange) {
                             commitmentMultiplier = 1.6;
                         }
 
                         if (bestScore > (currentScore * commitmentMultiplier)) {
-                            console.log(`>>> [RECALC] Shiny new parcel spotted (${bestAvailable.id})! E' migliore di un fattore ${commitmentMultiplier}. Cambio target!`);
+                            console.log(`>>> New parcel spotted (${bestAvailable.id}). Better by factor ${commitmentMultiplier}.`);
                             shouldInvalidate = true;
                         }
                     }
                 }
-
-                // Execute the invalidation
-                if (shouldInvalidate) {
-                    myBeliefs.currentPlan = null;
-                    target = null;
-                    intention = null;
-                }
+            } else if (intention === 'pickup' && (!target || myBeliefs.parcels.get(target.id)?.carriedBy)) {
+                shouldInvalidate = true;
             }
 
+            if (shouldInvalidate) {
+                myBeliefs.currentPlan = null;
+                target = null;
+                intention = null;
+            }
+
+            // Wait & Hope (and dreams)
             if (!target) {
-                let bestFreeParcel = getBestParcel();
                 let closestDelivery = getClosest(myBeliefs.me, myBeliefs.deliveryZones);
 
-                if (myCarriedParcels.length >= myBeliefs.config.capacity || (myCarriedParcels.length > 0 && !bestFreeParcel)) {
+                if (myCarriedParcels.length >= myBeliefs.config.capacity || (myCarriedParcels.length > 0 && !bestAvailable)) {
                     target = closestDelivery;
                     intention = 'deliver';
-                } else if (bestFreeParcel) {
-                    target = bestFreeParcel;
+                } else if (bestAvailable) {
+                    target = bestAvailable;
                     intention = 'pickup';
                 } else if (myBeliefs.spawnZones.length > 0) {
                     target = getBestSpawnZone();
                     intention = 'patrol';
+                } else {
+                    target = getRandomWalkableTile();
+                    intention = 'explore';
                 }
             }
 
-            // no objective situation: wait and hope for a spawn or a new parcel to appear
             if (!target) {
-                if (silentWaitCounter % 20 === 0) { // Stampa un log circa ogni secondo
-                    console.log("no parcel nor spwning zone, wait and hope...");
+                if (silentWaitCounter % 20 === 0) { 
+                    console.log("No target, nowhere to go. Waiting...");
                 }
                 silentWaitCounter++;
                 await new Promise(resolve => setTimeout(resolve, 50));
                 continue;
             }
 
-            if (target) {
-                const targetId = intention === 'pickup' ? target.id : (intention === 'deliver' ? 'delivery' : 'patrol');
+            // plan generation
+            const targetId = intention === 'pickup' ? target.id : (intention === 'deliver' ? 'delivery' : intention);
 
-                if (!myBeliefs.currentPlan || myBeliefs.currentPlan.targetId !== targetId || myBeliefs.currentPlan.steps.length === 0) {
-                    let newPlan;
+            if (!myBeliefs.currentPlan || myBeliefs.currentPlan.targetId !== targetId || myBeliefs.currentPlan.steps.length === 0) {
+                let newPlan;
+                
+                if (USE_PDDL) {
+                    newPlan = await generatePddlPlan(myBeliefs.me, target, intention);
+                } else {
+                    newPlan = generateAStarPlan(myBeliefs.me, target);
                     
-                    if (USE_PDDL) {
-                        newPlan = await generatePddlPlan(myBeliefs.me, target, intention);
-                    } else {
-                        newPlan = generateAStarPlan(myBeliefs.me, target);
-                        
-                        if (newPlan !== null) {
-                            if (intention === 'pickup') {
-                                newPlan.push('pick_up');
-                            } else if (intention === 'deliver') {
-                                newPlan.push('put_down');
-                            }
+                    if (newPlan !== null) {
+                        if (intention === 'pickup') {
+                            newPlan.push('pick_up');
+                        } else if (intention === 'deliver') {
+                            newPlan.push('put_down');
                         }
                     }
+                }
 
-                    if (newPlan !== null) {
-                        // already on target
+                if (newPlan !== null) {
                     if (newPlan.length === 0) {
-                        if (intention === 'patrol') {
-                            console.log(`nothing to do, patrolling...`);
-                            await emitRandomMove();
-                            await new Promise(resolve => setTimeout(resolve, 500));
+                        if (intention === 'patrol' || intention === 'explore') {
+                            console.log(`Reached ${intention} location, recalculating...`);
+                            myBeliefs.currentPlan = null; // Forza la ricerca di una nuova cella al prossimo loop
+                            await new Promise(resolve => setTimeout(resolve, 100));
                             continue;
                         } else {
-                            if (silentWaitCounter % 10 === 0) {
-                            }
                             silentWaitCounter++;
                             await new Promise(resolve => setTimeout(resolve, 500));
                             continue;
                         }
                     }
-                        
-                        console.log(`Piano generato per ${intention}! Passi: ${newPlan}`);
-                        myBeliefs.currentPlan = { targetId: targetId, steps: newPlan };
-                        silentWaitCounter = 0;
-                    } else {
-                        console.log(`Target irraggiungibile per ${intention}, marco ostacolo e sblocco.`);
-                        myBeliefs.currentPlan = null;
-                        myBeliefs.obstacles.set(`${Math.round(target.x)},${Math.round(target.y)}`, Date.now());
-                        
-                        await emitRandomMove();
-                        await new Promise(res => setTimeout(res, 500));
-                        continue;
-                    }
-                }
-
-                const nextAction = myBeliefs.currentPlan.steps[0];
-                let success = false;
-
-                if (nextAction === 'pick_up') {
-                    await socket.emitPickup(); 
-                    let p = myBeliefs.parcels.get(target.id);
-                    if (p) p.carriedBy = myBeliefs.me.id;
-                    success = true;
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                } else if (nextAction === 'put_down') {
-                    await socket.emitPutdown();
-                    for (let [id, p] of myBeliefs.parcels) {
-                        if (p.carriedBy === myBeliefs.me.id) myBeliefs.parcels.delete(id);
-                    }
-                    success = true;
-                    await new Promise(resolve => setTimeout(resolve, 100));
-                } else {
-                    let targetX = Math.round(myBeliefs.me.x);
-                    let targetY = Math.round(myBeliefs.me.y);
-                    if (nextAction === 'up') targetY += 1;
-                    if (nextAction === 'down') targetY -= 1;
-                    if (nextAction === 'left') targetX -= 1;
-                    if (nextAction === 'right') targetX += 1;
-
-                    let isAgentBlocking = false;
-                    for (const agent of myBeliefs.agents.values()) {
-                        if (Math.round(agent.x) === targetX && Math.round(agent.y) === targetY) {
-                            isAgentBlocking = true;
-                            break;
-                        }
-                    }
-
-                    if (isAgentBlocking) {
-                        if (myBeliefs.currentPlan.stuckCount === undefined) myBeliefs.currentPlan.stuckCount = 0;
-                        myBeliefs.currentPlan.stuckCount++;
-
-                        if (myBeliefs.currentPlan.stuckCount > 4) {
-                            console.log(`>>> [BLOCKED] Agente fermo da troppo tempo. Ricalcolo...`);
-                            myBeliefs.obstacles.set(`${targetX},${targetY}`, Date.now());
-                            myBeliefs.currentPlan = null;
-                        } else {
-                            console.log(`enemy ahead. waiting...`);
-                            await new Promise(resolve => setTimeout(resolve, 300));
-                        }
-                        continue; 
-                    }
-
-                    if (myBeliefs.currentPlan) myBeliefs.currentPlan.stuckCount = 0;
                     
-                    success = await resilientMove(nextAction); 
-                }
-
-                if (success) {
-                    myBeliefs.currentPlan.steps.shift();
+                    console.log(`Generated plan for ${intention}! Steps: ${newPlan.length}`);
+                    myBeliefs.currentPlan = { targetId: targetId, target: target, steps: newPlan };
+                    silentWaitCounter = 0;
                 } else {
-                    console.log(`Mossa fallita: ${nextAction}. Ricalcolo...`);
-                    myBeliefs.currentPlan = null; 
+                    console.log(`Nessun percorso per ${intention}. Forse c'è un ingorgo o è temporaneamente bloccato. Attendo...`);
+                    myBeliefs.currentPlan = null;
                     
-                    if (nextAction !== 'pick_up' && nextAction !== 'put_down') {
-                        let ox = Math.round(myBeliefs.me.x);
-                        let oy = Math.round(myBeliefs.me.y);
-                        if (nextAction === 'up') oy += 1;
-                        if (nextAction === 'down') oy -= 1;
-                        if (nextAction === 'left') ox -= 1;
-                        if (nextAction === 'right') ox += 1;
-                        myBeliefs.obstacles.set(`${ox},${oy}`, Date.now());
-                    }
+                    let blacklistKey = target.id || `${Math.round(target.x)},${Math.round(target.y)}`;
+                    console.log(`Blacklisting target ${blacklistKey} per 15 secondi per evitare loop infiniti.`);
+                    myBeliefs.blacklistedTargets.set(blacklistKey, Date.now());
+                    
+                    await new Promise(res => setTimeout(res, 500));
                     continue;
                 }
             }
+
+            // plan exectution
+            const nextAction = myBeliefs.currentPlan.steps[0];
+            let success = false;
+
+            if (nextAction === 'pick_up') {
+                await socket.emitPickup(); 
+                let p = myBeliefs.parcels.get(target.id);
+                if (p) p.carriedBy = myBeliefs.me.id;
+                success = true;
+                await new Promise(resolve => setTimeout(resolve, 100));
+            } else if (nextAction === 'put_down') {
+                await socket.emitPutdown();
+                for (let [id, p] of myBeliefs.parcels) {
+                    if (p.carriedBy === myBeliefs.me.id) myBeliefs.parcels.delete(id);
+                }
+                success = true;
+                await new Promise(resolve => setTimeout(resolve, 100));
+            } else {
+                let targetX = Math.round(myBeliefs.me.x);
+                let targetY = Math.round(myBeliefs.me.y);
+                if (nextAction === 'up') targetY += 1;
+                if (nextAction === 'down') targetY -= 1;
+                if (nextAction === 'left') targetX -= 1;
+                if (nextAction === 'right') targetX += 1;
+
+                let isAgentBlocking = false;
+                for (const agent of myBeliefs.agents.values()) {
+                    if (Math.round(agent.x) === targetX && Math.round(agent.y) === targetY) {
+                        isAgentBlocking = true;
+                        break;
+                    }
+                }
+
+                if (isAgentBlocking) {
+                    if (myBeliefs.currentPlan.stuckCount === undefined) myBeliefs.currentPlan.stuckCount = 0;
+                    myBeliefs.currentPlan.stuckCount++;
+
+                    if (myBeliefs.currentPlan.stuckCount > 4) {
+                        console.log(`>>> agent stuck. recalculating...`);
+                        myBeliefs.currentPlan = null;
+                    } else {
+                        console.log(`enemy ahead. waiting...`);
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                    }
+                    continue; 
+                }
+
+                if (myBeliefs.currentPlan) myBeliefs.currentPlan.stuckCount = 0;
+                
+                success = await resilientMove(nextAction); 
+            }
+
+            if (success) {
+                myBeliefs.currentPlan.steps.shift();
+            } else {
+                console.log(`Mossa fallita: ${nextAction}. Ricalcolo...`);
+                myBeliefs.currentPlan = null; 
+                
+                if (nextAction !== 'pick_up' && nextAction !== 'put_down') {
+                    let ox = Math.round(myBeliefs.me.x);
+                    let oy = Math.round(myBeliefs.me.y);
+                    if (nextAction === 'up') oy += 1;
+                    if (nextAction === 'down') oy -= 1;
+                    if (nextAction === 'left') ox -= 1;
+                    if (nextAction === 'right') ox += 1;
+                    myBeliefs.obstacles.set(`${ox},${oy}`, Date.now());
+                }
+                continue;
+            }
             
         } catch (error) {
-            console.log(`Errore nel loop (${error.message}). Ritento...`);
+            console.log(`loop error (${error.message}). retrying...`);
             await new Promise(res => setTimeout(res, 1000));
         }
     }
@@ -555,20 +598,32 @@ function generateAStarPlan(start, target) {
             return current.path;
         }
 
-        const dirs = [
-            { dir: 'up', dx: 0, dy: 1 }, { dir: 'down', dx: 0, dy: -1 },
-            { dir: 'right', dx: 1, dy: 0 }, { dir: 'left', dx: -1, dy: 0 }
+        const currentTileType = String(myBeliefs.map.get(`${current.x},${current.y}`));
+
+        let allowedDirs = [
+            { dir: 'up', dx: 0, dy: 1 }, 
+            { dir: 'down', dx: 0, dy: -1 },
+            { dir: 'right', dx: 1, dy: 0 }, 
+            { dir: 'left', dx: -1, dy: 0 }
         ];
 
-        for (let d of dirs) {
+
+        for (let d of allowedDirs) {
             const nx = current.x + d.dx;
             const ny = current.y + d.dy;
             const key = `${nx},${ny}`;
 
             if (myBeliefs.obstacles.has(key)) continue; 
 
-            const tileType = myBeliefs.map.get(key);
-            if (tileType === undefined || String(tileType) === '0') continue;
+            const tileTypeRaw = myBeliefs.map.get(key);
+            if (tileTypeRaw === undefined || String(tileTypeRaw) === '0') continue;
+
+            const targetTileStr = String(tileTypeRaw);
+            
+            if (d.dir === 'left' && targetTileStr === '→') continue;
+            if (d.dir === 'right' && targetTileStr === '←') continue;
+            if (d.dir === 'up' && targetTileStr === '↓') continue;
+            if (d.dir === 'down' && targetTileStr === '↑') continue;
 
             let isOccupiedByAgent = false;
             for (const agent of myBeliefs.agents.values()) {
@@ -624,9 +679,9 @@ function getClosest(pos, locations) {
 function getBestSpawnZone() {
     if (myBeliefs.spawnZones.length === 0) return null;
 
+    myBeliefs.lastChecked = myBeliefs.lastChecked || new Map();
     let bestZone = null;
     let bestScore = Infinity; 
-
     const now = Date.now();
 
     for (const zone of myBeliefs.spawnZones) {
@@ -634,23 +689,30 @@ function getBestSpawnZone() {
         
         let opponentsNearby = 0;
         for (const agent of myBeliefs.agents.values()) {
-            if (getDistance(zone, agent) <= 4) { 
-                opponentsNearby++;
-            }
+            if (getDistance(zone, agent) <= 4) opponentsNearby++;
         }
 
-        const lastActivity = myBeliefs.spawnActivity.get(`${zone.x},${zone.y}`) || now;
-        const timeSinceActivity = now - lastActivity;
+        let checkedTime = myBeliefs.lastChecked.get(`${zone.x},${zone.y}`) || 0;
+        let timeSinceChecked = now - checkedTime; 
+        
+        let checkPenalty = 0;
+        
+        if (timeSinceChecked < 20000) { 
+            checkPenalty = 1000;
+        } else {
+            checkPenalty = -Math.min(timeSinceChecked / 1000, 50); 
+        }
 
-        let dueBonus = Math.min(timeSinceActivity / 1000, 20);
-
-        let penaltyWeight = 15; 
-        let score = distToZone + (opponentsNearby * penaltyWeight)- dueBonus;
+        let score = distToZone + (opponentsNearby * 15) + checkPenalty;
 
         if (score < bestScore) {
             bestScore = score;
             bestZone = zone;
         }
+    }
+
+    if (bestScore > 500) {
+        return null;
     }
 
     return bestZone;
@@ -668,6 +730,9 @@ function getBestParcel() {
 
     for (let p of myBeliefs.parcels.values()) {
         if (p.carriedBy) continue;
+        const blacklistedAt = myBeliefs.blacklistedTargets.get(p.id);
+        const now = Date.now();
+        if (blacklistedAt && now - blacklistedAt < 15000) continue;
 
         let distToParcel = getDistance(myBeliefs.me, p);
         if (distToParcel === 0) distToParcel = 0.1;
