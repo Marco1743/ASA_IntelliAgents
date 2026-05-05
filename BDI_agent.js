@@ -257,13 +257,6 @@ async function agentLoop() {
 
     while (true) {
         try {
-            await new Promise(res => setTimeout(res, myBeliefs.config.clock)); 
-
-            const isCentered = Math.abs(myBeliefs.me.x - Math.round(myBeliefs.me.x)) <= 0.1 && 
-                               Math.abs(myBeliefs.me.y - Math.round(myBeliefs.me.y)) <= 0.1;
-
-            if (!isCentered) continue; 
-
             const now = Date.now();
             myBeliefs.lastChecked = myBeliefs.lastChecked || new Map();
             for (const zone of myBeliefs.spawnZones) {
@@ -444,14 +437,12 @@ async function agentLoop() {
                 let p = myBeliefs.parcels.get(target.id);
                 if (p) p.carriedBy = myBeliefs.me.id;
                 success = true;
-                await new Promise(resolve => setTimeout(resolve, 100));
             } else if (nextAction === 'put_down') {
                 await socket.emitPutdown();
                 for (let [id, p] of myBeliefs.parcels) {
                     if (p.carriedBy === myBeliefs.me.id) myBeliefs.parcels.delete(id);
                 }
                 success = true;
-                await new Promise(resolve => setTimeout(resolve, 100));
             } else {
                 let targetX = Math.round(myBeliefs.me.x);
                 let targetY = Math.round(myBeliefs.me.y);
