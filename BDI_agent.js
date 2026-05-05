@@ -143,6 +143,7 @@ socket.on('map', (width, height, tiles) => {
 
 // parcels
 const handleParcels = (sensedParcels) => {
+    console.log(`>>> RICEVUTO EVENTO PARCELS: ${sensedParcels.length} pacchi visti dal server!`);
     if (sensedParcels && sensedParcels.length > 0) {
         console.log(` sensed ${sensedParcels.length} parcels!`);
     }
@@ -186,12 +187,16 @@ const handleParcels = (sensedParcels) => {
     }
 };
 
-// slides vs server, sides and server seems to differ in naming events
-socket.on('parcelsSensing', handleParcels);
-socket.on('parcels sensing', handleParcels);
+socket.on('sensing', (sensedData) => {
+    if (sensedData.parcels) {
+        handleParcels(sensedData.parcels);
+    }
+    
+    if (sensedData.agents) {
+        handleAgents(sensedData.agents);
+    }
+});
 
-
-// enemies perception
 const handleAgents = (sensedAgents) => {
     myBeliefs.agents.clear();
     for (const a of sensedAgents) {
@@ -201,13 +206,10 @@ const handleAgents = (sensedAgents) => {
     }
 };
 
-
-// slides vs server, sides and server seems to differ in naming events
-socket.on('agentsSensing', handleAgents);
-socket.on('agents sensing', handleAgents);
+socket.onAgentsSensing(handleAgents);
 
 // self perception 
-socket.on('you', (me) => {
+socket.onYou((me) => {
     myBeliefs.me = me;
 });
 
@@ -265,7 +267,6 @@ async function agentLoop() {
             const now = Date.now();
             myBeliefs.lastChecked = myBeliefs.lastChecked || new Map();
             for (const zone of myBeliefs.spawnZones) {
-                // Se la zona di spawn è nel nostro campo visivo, registriamo di averla vista ORA
                 if (getDistance(myBeliefs.me, zone) <= myBeliefs.config.vision) {
                     myBeliefs.lastChecked.set(`${zone.x},${zone.y}`, now);
                 }
@@ -304,11 +305,11 @@ async function agentLoop() {
 
             //soft commitment
             let shouldInvalidate = false;
+            console.log(`>>> Pacchi in memoria: ${myBeliefs.parcels.size}`);
             const bestAvailable = getBestParcel();
 
             if (bestAvailable) {
                 if (intention === 'explore' || intention === 'patrol' || intention === null) {
-                    // Abbandona subito l'esplorazione se vedi un pacco!
                     console.log(`>>> Pacco avvistato (${bestAvailable.id})! Interrompo ${intention || 'attesa'}.`);
                     shouldInvalidate = true;
                 } else if (myBeliefs.currentPlan && intention === 'pickup' && target) {
@@ -318,7 +319,6 @@ async function agentLoop() {
                         console.log(`>>> Target ${target.id} was taken or vanished. Aborting plan.`);
                         shouldInvalidate = true;
                     } else if (bestAvailable.id !== target.id) {
-                        // Logica Dinamica: calcola i range in base alla visione
                         const closeRange = Math.max(2, Math.floor(myBeliefs.config.vision * 0.4));
                         const midRange = myBeliefs.config.vision;
 
@@ -409,7 +409,7 @@ async function agentLoop() {
                     if (newPlan.length === 0) {
                         if (intention === 'patrol' || intention === 'explore') {
                             console.log(`Reached ${intention} location, recalculating...`);
-                            myBeliefs.currentPlan = null; // Forza la ricerca di una nuova cella al prossimo loop
+                            myBeliefs.currentPlan = null;
                             await new Promise(resolve => setTimeout(resolve, 100));
                             continue;
                         } else {
@@ -738,6 +738,7 @@ function getBestParcel() {
         if (distToParcel === 0) distToParcel = 0.1;
 
         let currentScore;
+        let reward = p.reward || 1;
 
         if (isCarrying && targetDeliveryZone) {
 
@@ -748,12 +749,12 @@ function getBestParcel() {
             
             if (detourCost <= 0) detourCost = 0.1;
 
-            currentScore = p.reward / detourCost;
+            currentScore = reward / detourCost;
 
         } else {
             let closestDelivery = getClosest(p, myBeliefs.deliveryZones);
             let distToDelivery = getDistance(p, closestDelivery);
-            currentScore = p.reward / (distToParcel + distToDelivery);
+            currentScore = reward / (distToParcel + distToDelivery);
         }
 
         if (!best || currentScore > bestScore) {
