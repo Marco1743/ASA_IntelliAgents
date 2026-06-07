@@ -1,7 +1,3 @@
-// Shared geometry primitives used by both agents.
-//
-// The four cardinal directions are kept in a single source of truth so a tile
-// type like '→' is rejected the same way regardless of who is planning.
 
 export const DIRECTIONS = Object.freeze([
     { dir: 'up',    dx: 0,  dy: 1  },
@@ -10,14 +6,12 @@ export const DIRECTIONS = Object.freeze([
     { dir: 'left',  dx: -1, dy: 0  }
 ]);
 
-/** Manhattan distance between two integer-or-fractional positions. */
 export function manhattan(a, b) {
     if (!a || !b || a.x === undefined || b.x === undefined) return Infinity;
     return Math.abs(Math.round(a.x) - Math.round(b.x))
          + Math.abs(Math.round(a.y) - Math.round(b.y));
 }
 
-/** Closest point in `candidates` to `from`, by Manhattan distance. */
 export function getClosest(from, candidates) {
     let best = null, bestD = Infinity;
     for (const c of candidates) {
@@ -27,7 +21,6 @@ export function getClosest(from, candidates) {
     return best;
 }
 
-/** Returns true if `tileType` blocks movement coming from `dir` (one-way tiles). */
 export function tileBlocksFromDirection(tileType, dir) {
     const t = String(tileType);
     return (dir === 'left'  && t === '→')
@@ -36,10 +29,6 @@ export function tileBlocksFromDirection(tileType, dir) {
         || (dir === 'down'  && t === '↑');
 }
 
-/**
- * Binary min-heap, ordered by the `.f` field of inserted nodes.
- * Shared by the Pathfinder; kept here so both agents pull from one source.
- */
 export class MinHeap {
     constructor() { this.h = []; }
 
