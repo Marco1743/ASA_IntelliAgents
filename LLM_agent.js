@@ -1,3 +1,4 @@
+// LLM agent entry point. All logic lives under agents/.
 
 import 'dotenv/config';
 import readline from 'node:readline';
@@ -9,12 +10,17 @@ import { AsaProtocol } from './agents/common/AsaProtocol.js';
 import { LlmAgent } from './agents/llm/LlmAgent.js';
 import { ensureOllama } from './agents/llm/runtime.js';
 
+// ---------------------------------------------------------------------------
+// LLM endpoint selection.
+//   LLM_LOCAL = true  -> Ollama at 127.0.0.1:11434 (auto-bootstrapped here)
+//   LLM_LOCAL = false -> https://llm.bears.disi.unitn.it/v1 (requires VPN)
+// ---------------------------------------------------------------------------
 const LLM_LOCAL = true;
 
 const LOCAL_PROFILE = {
     ollamaHost: 'http://127.0.0.1:11434',
-    apiKey:     'ollama',
-    model:      'qwen2.5:7b'
+    apiKey:     'ollama',           // Ollama ignores the key but the SDK requires non-empty
+    model:      'qwen2.5:7b'        // override with $env:OLLAMA_MODEL
 };
 const REMOTE_PROFILE = {
     baseURL: 'https://llm.bears.disi.unitn.it/v1',
@@ -23,39 +29,18 @@ const REMOTE_PROFILE = {
 };
 
 if (!LLM_LOCAL && !REMOTE_PROFILE.apiKey) {
-    console.error('FATAL: LITELLM_API_KEY missing for remote profile. Set it in .env.');
+    console.error('FATAL: LITELLM_API_KEY missing for remote profile.');
     process.exit(1);
 }
-if (!process.env.LLM_TOKEN && !process.env.TOKEN) {
-    console.error('FATAL: LLM_TOKEN (or TOKEN) missing in environment.');
-    process.exit(1);
-}
-
-if (process.env.LLM_TOKEN) process.env.TOKEN = process.env.LLM_TOKEN;
-
-const socket = DjsConnect();
-const client = new GameClient(socket);
-const asa    = new AsaProtocol(client);
-
-let agent = null;
-const cliObjective = process.argv.slice(2).join(' ').trim();
-let pendingObjective = cliObjective || null;
 
 async function makeLlmClient() {
     if (LLM_LOCAL) {
         const wantedModel = process.env.OLLAMA_MODEL || LOCAL_PROFILE.model;
         const ollamaHost  = process.env.OLLAMA_HOST  || LOCAL_PROFILE.ollamaHost;
-        try {
-            const { openaiBaseURL, model } = await ensureOllama({ host: ollamaHost, model: wantedModel });
-            console.log(`[llm-entry] LLM ready (LOCAL/Ollama) | endpoint: ${openaiBaseURL} | model: ${model}`);
-            return { llmClient: new OpenAI({ baseURL: openaiBaseURL, apiKey: LOCAL_PROFILE.apiKey }), model };
-        } catch (err) {
-            console.error(`[llm-entry] FATAL: Ollama bootstrap failed: ${err.message}`);
-            console.error('[llm-entry] Install Ollama (winget install --id Ollama.Ollama) or set LLM_LOCAL=false.');
-            process.exit(1);
-        }
+        const { openaiBaseURL, model } = await ensureOllama({ host: ollamaHost, model: wantedModel });
+        console.log(`[llm-entry] LLM ready (LOCAL/Ollama) | endpoint: ${openaiBaseURL} | model: ${model}`);
+        return { llmClient: new OpenAI({ baseURL: openaiBaseURL, apiKey: LOCAL_PROFILE.apiKey }), model };
     }
-
     const baseURL = process.env.LITELLM_BASE_URL || REMOTE_PROFILE.baseURL;
     const model   = process.env.LLM_MODEL || REMOTE_PROFILE.model;
     try {
@@ -63,15 +48,26 @@ async function makeLlmClient() {
         const resp = await fetch(`${u.origin}${u.pathname.replace(/\/$/, '')}/models`, {
             method: 'GET', headers: { Authorization: `Bearer ${REMOTE_PROFILE.apiKey}` }
         });
-        console.log(`[llm-entry] LLM ready (REMOTE/unitn) | endpoint: ${baseURL} | model: ${model} | HTTP ${resp.status}`);
+        console.log(`[llm-entry] LLM ready (REMOTE-unitn) | endpoint: ${baseURL} | model: ${model} | HTTP ${resp.status}`);
     } catch (err) {
         const code = err.cause?.code || err.code || err.message;
         console.error(`[llm-entry] FATAL: cannot reach remote LLM (${code}).`);
-        console.error('[llm-entry] Connect to the unitn VPN (GlobalProtect, vpn-mfa.icts.unitn.it) or set LLM_LOCAL=true.');
+        console.error('[llm-entry] Connect the unitn VPN or set LLM_LOCAL=true.');
         process.exit(1);
     }
     return { llmClient: new OpenAI({ baseURL, apiKey: REMOTE_PROFILE.apiKey }), model };
 }
+
+// ---------------------------------------------------------------------------
+// Connect socket + bootstrap LLM in parallel.
+// ---------------------------------------------------------------------------
+const socket = DjsConnect();
+const client = new GameClient(socket);
+const asa    = new AsaProtocol(client);
+
+const cliObjective = process.argv.slice(2).join(' ').trim();
+let pendingObjective = cliObjective || null;
+let agent = null;
 
 (async () => {
     const { llmClient, model } = await makeLlmClient();
@@ -79,16 +75,15 @@ async function makeLlmClient() {
     await agent.ready();
     console.log('[llm-entry] game state ready.');
 
-    agent.startStandardLoop();
-
     if (pendingObjective) {
         const o = pendingObjective; pendingObjective = null;
         agent.dispatchObjective(o);
     } else {
-        console.log('[llm-entry] type an objective (or pass one as CLI arg, or shout from the in-game chat).');
+        console.log('[llm-entry] type an objective and press enter (or pass one as CLI arg, or shout from the game).');
     }
 })();
 
+// Interactive stdin objectives.
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 rl.on('line', (line) => {
     const text = line.trim();

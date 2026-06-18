@@ -1,3 +1,6 @@
+// Extra memory state for the LLM agent — sits alongside the base WorldState
+// owned by GameClient. Holds objective, ReAct history, BDI inbox, free-form
+// notes, and the replan flag the planner reads between turns.
 
 export class LlmMemory {
 
@@ -6,39 +9,28 @@ export class LlmMemory {
         this.objective = null;
         this.objectiveSetAt = 0;
 
-        this.lastMissionSenderId = null;
-        this.lastMissionSenderName = null;
-
-        this.history  = [];
-        this.inbox    = [];
-        this.notes    = [];
+        this.history  = [];   // [{ iter, tool, args, observation }]
+        this.inbox    = [];   // structured BDI messages
+        this.notes    = [];   // free-form scratchpad
         this.iteration = 0;
-
-        this.activeRules = [];
 
         this.shouldReplan = false;
         this.replanReason = null;
 
+        // Replan automatically when a parcel I was tracking disappears.
         client.on('parcel-lost', ({ id }) => {
             this.shouldReplan = true;
             this.replanReason = `parcel_${id}_lost`;
         });
     }
 
-    setObjective(text, sender = null) {
+    setObjective(text) {
         this.objective = text;
         this.objectiveSetAt = Date.now();
         this.history = [];
         this.iteration = 0;
         this.shouldReplan = true;
         this.replanReason = 'new_objective';
-        if (sender) {
-            this.lastMissionSenderId   = sender.id   || null;
-            this.lastMissionSenderName = sender.name || null;
-        } else {
-            this.lastMissionSenderId   = null;
-            this.lastMissionSenderName = null;
-        }
     }
 
     recordToolCall(tool, args, observation) {
@@ -72,14 +64,7 @@ export class LlmMemory {
         if (this.notes.length > 15) this.notes = this.notes.slice(-15);
     }
 
-    addRule(rule) {
-        if (!rule || !rule.kind) return;
-        const key = JSON.stringify({ kind: rule.kind, data: rule.data || null });
-        this.activeRules = this.activeRules.filter(
-            r => JSON.stringify({ kind: r.kind, data: r.data || null }) !== key);
-        this.activeRules.push({ kind: rule.kind, data: rule.data || null, at: Date.now() });
-    }
-
+    /** Compact view shipped to the LLM each turn. */
     snapshot() {
         const st = this.client.state;
         const carriedSet = new Set(st.carrying.map(p => p.id));
@@ -95,9 +80,6 @@ export class LlmMemory {
         }));
         return {
             objective: this.objective,
-            mission_sender: this.lastMissionSenderId
-                ? { id: this.lastMissionSenderId, name: this.lastMissionSenderName }
-                : null,
             me: {
                 id: st.me.id, name: st.me.name,
                 x: st.me.x !== undefined ? Math.round(st.me.x) : null,
@@ -115,8 +97,7 @@ export class LlmMemory {
             visibleAgents,
             recentHistory: this.history.slice(-8),
             inbox: this.inbox.slice(-5),
-            notes: this.notes.slice(-5),
-            activeRules: this.activeRules
+            notes: this.notes.slice(-5)
         };
     }
 

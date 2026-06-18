@@ -1,5 +1,7 @@
-
-import { selectDeliverySet } from './Intentions.js';
+// Plan-execution helper for BdiAgent. Owns the per-step logic:
+// move retries, stuck detection, blocked-tile reaction. Kept separate from
+// the agent loop so the loop reads as deliberation + commitment, and this
+// class reads as "how to actually push a move through".
 
 export class PlanExecutor {
 
@@ -8,50 +10,43 @@ export class PlanExecutor {
         this.beliefs = beliefs;
     }
 
+    /** Move with up to N retries on transient failures. */
     async resilientMove(direction, maxRetries = 3) {
         for (let i = 0; i < maxRetries; i++) {
             const r = await this.client.move(direction);
             if (r) return r;
             await sleep(500);
         }
-
+        await this.client.shout(`Blocked trying to move ${direction}`);
         return false;
     }
 
+    /**
+     * Execute the next step of the current plan.
+     * Returns: 'done' (step succeeded), 'stuck' (replan needed), 'failed' (replan + add obstacle).
+     */
     async executeStep(nextAction, target) {
         const plan = this.beliefs.currentPlan;
         if (!plan) return 'failed';
 
         if (nextAction === 'pick_up') {
-            const picked = await this.client.pickup();
+            await this.client.pickup();
             const p = this.client.state.parcels.get(target.id);
             if (p) p.carriedBy = this.client.state.me.id;
-            if (picked && picked.length) this.beliefs.metrics.pickups += picked.length;
             plan.steps.shift();
             return 'done';
         }
         if (nextAction === 'put_down') {
+            await this.client.putdown();
             const me = this.client.state.me;
-
-            const onDelivery = this.client.state.deliveryZones.some(z =>
-                Math.round(z.x) === Math.round(me.x) && Math.round(z.y) === Math.round(me.y));
-
-            const selectedIds = onDelivery ? selectDeliverySet(this.client.state, this.beliefs) : null;
-            await this.client.putdown(selectedIds || undefined);
-
-            const droppedSet = selectedIds ? new Set(selectedIds) : null;
-            let countedDeliveries = 0;
             for (const [id, p] of this.client.state.parcels) {
-                if (p.carriedBy !== me.id) continue;
-                if (droppedSet && !droppedSet.has(id)) continue;
-                this.client.state.parcels.delete(id);
-                if (onDelivery) countedDeliveries++;
+                if (p.carriedBy === me.id) this.client.state.parcels.delete(id);
             }
-            if (onDelivery) this.beliefs.metrics.deliveries += countedDeliveries;
             plan.steps.shift();
             return 'done';
         }
 
+        // Move action — first check if an enemy is sitting on the target tile.
         const me = this.client.state.me;
         let tx = Math.round(me.x), ty = Math.round(me.y);
         if (nextAction === 'up')    ty += 1;

@@ -1,6 +1,11 @@
+// Extra belief state specific to the BDI agent — sits alongside the base
+// WorldState owned by GameClient. Holds everything the crowded-world logic
+// needs: enemy velocity history, congestion heat map, blocked tiles, claims
+// honoured from other agents, blacklisted parcels, current plan.
 
 import { manhattan } from '../common/geometry.js';
 
+// Tunables — kept here so the agent loop can read them without magic numbers.
 export const ENEMY_ADJ_COST       = 4;
 export const ENEMY_PREDICTED_COST = 8;
 export const ENEMY_ON_TILE_COST   = 20;
@@ -13,50 +18,23 @@ export const RACE_LOSS_MARGIN     = 1;
 export class BdiBeliefs {
 
     constructor(client) {
-        this.client = client;
+        this.client = client;            // GameClient reference (read-only here)
 
-        this.obstacles          = new Map();
-        this.blacklistedTargets = new Map();
-        this.blockedTiles       = new Map();
-        this.spawnActivity      = new Map();
-        this.lastChecked        = new Map();
-        this.congestionMap      = new Map();
-        this.teamClaims         = new Map();
+        this.obstacles          = new Map();   // "x,y" -> ts (failed move target)
+        this.blacklistedTargets = new Map();   // parcel/zone id -> ts
+        this.blockedTiles       = new Map();   // "x,y" -> ts (stuck-handler hard block)
+        this.spawnActivity      = new Map();   // "x,y" -> ts (last seen parcel here)
+        this.lastChecked        = new Map();   // "x,y" -> ts (we visited this zone)
+        this.congestionMap      = new Map();   // "x,y" -> { count, lastSeen }
+        this.teamClaims         = new Map();   // parcel_id -> { byId, at }
         this.teamMessages       = [];
-
-        this.parcelHistory      = new Map();
-        this.decayPerMs         = 0;
-
-        this.constraints = {
-            deliveryThreshold: null,
-            deliveryBonus: null,
-            preferredDeliveryTiles: [],
-            forbiddenDeliveryTiles: [],
-            parcelRewardMax: null,
-
-            tilePenalties: [],
-            tileBonuses:   [],
-
-            forcedTarget: null,
-            pauseUntilResume: false
-        };
-
-        this.metrics = {
-            startedAt: Date.now(),
-            pickups: 0,
-            deliveries: 0,
-            scoreSnapshot: 0,
-            plansBuilt: 0,
-            claimsHonored: 0,
-            blockedTilesAdded: 0
-        };
 
         this.currentPlan = null;
 
+        // Inject enemy-velocity tracking onto GameClient's sensing.
         client.on('agents-update', () => this._enrichAgents());
 
-        client.on('parcels-update', () => this._learnDecay());
-
+        // Initialise spawn-activity timestamps once map arrives.
         client.on('map', () => {
             const now = Date.now();
             for (const z of client.state.spawnZones) {
@@ -65,45 +43,7 @@ export class BdiBeliefs {
         });
     }
 
-    _learnDecay() {
-        const now = Date.now();
-        let totalSlope = 0, samples = 0;
-        for (const p of this.client.state.parcels.values()) {
-            const prev = this.parcelHistory.get(p.id);
-            if (prev) {
-                const dt = now - prev.lastSeen;
-                const dr = prev.lastReward - (p.reward || 0);
-                if (dt > 50 && dr >= 0 && dr <= 5) {
-                    totalSlope += dr / dt;
-                    samples++;
-                }
-                prev.lastSeen = now;
-                prev.lastReward = p.reward || 0;
-            } else {
-                this.parcelHistory.set(p.id, {
-                    firstSeen: now, firstReward: p.reward || 0,
-                    lastSeen: now,  lastReward:  p.reward || 0
-                });
-            }
-        }
-        if (samples > 0) {
-            const avg = totalSlope / samples;
-
-            this.decayPerMs = this.decayPerMs === 0 ? avg : (0.9 * this.decayPerMs + 0.1 * avg);
-        }
-
-        for (const id of this.parcelHistory.keys()) {
-            if (!this.client.state.parcels.has(id)) this.parcelHistory.delete(id);
-        }
-    }
-
-    expectedRewardAt(parcel, pathSteps) {
-        const stepMs = this.client.state.config.movementDuration || 200;
-        const travelMs = pathSteps * stepMs;
-        const decayed = (parcel.reward || 0) - travelMs * this.decayPerMs;
-        return Math.max(decayed, 0);
-    }
-
+    /** Estimate enemy velocity from prior observation + 0.6 mid-step heuristic. */
     _enrichAgents() {
         const st = this.client.state;
         const now = Date.now();
@@ -125,6 +65,7 @@ export class BdiBeliefs {
             }
             a.vx = vx; a.vy = vy;
 
+            // Bump congestion at the enemy's current tile.
             const k = `${Math.round(a.x)},${Math.round(a.y)}`;
             const cell = this.congestionMap.get(k) || { count: 0, lastSeen: now };
             cell.count = Math.min(cell.count + 1, 50);
@@ -133,6 +74,7 @@ export class BdiBeliefs {
         }
     }
 
+    /** Build a per-tile soft cost map used by A* when planning. */
     buildEnemyCostMap() {
         const cost = new Map();
         const bump = (x, y, c) => {
@@ -156,14 +98,10 @@ export class BdiBeliefs {
             const penalty = Math.min(info.count * fresh * 0.5, CONGESTION_MAX_COST);
             if (penalty > 0.5) cost.set(k, (cost.get(k) || 0) + penalty);
         }
-
-        for (const t of (this.constraints?.tilePenalties || [])) {
-            const k = `${Math.round(t.x)},${Math.round(t.y)}`;
-            cost.set(k, (cost.get(k) || 0) + (t.points || 0));
-        }
         return cost;
     }
 
+    /** True if any sensed enemy can reach `target` strictly sooner than I can. */
     isRaceLost(target) {
         const me = this.client.state.me;
         const myDist = manhattan(me, target);
@@ -173,6 +111,7 @@ export class BdiBeliefs {
         return false;
     }
 
+    /** Expire stale entries in all the time-windowed maps. */
     pruneStale() {
         const now = Date.now();
         for (const [k, info] of this.congestionMap.entries()) {

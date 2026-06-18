@@ -1,10 +1,10 @@
+// LlmAgent — wires together GameClient, AsaProtocol, LlmMemory, tool catalog
+// and Planner. Owns the objective dispatch logic so an external entry point
+// can stay as small as 30 lines.
 
 import { LlmMemory } from './LlmMemory.js';
-import { makeTools } from './tools.js';
+import { getOpenAITools, makeToolImpls } from './tools.js';
 import { Planner } from './Planner.js';
-import { BdiAgent } from '../bdi/BdiAgent.js';
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 export class LlmAgent {
 
@@ -14,74 +14,48 @@ export class LlmAgent {
         this.llmClient = llmClient;
         this.model     = model;
 
-        this.memory = new LlmMemory(client);
-        this.tools  = makeTools({ client, memory: this.memory, asa });
+        this.memory      = new LlmMemory(client);
+        this.toolImpls   = makeToolImpls({ client, memory: this.memory, asa });
+        this.openAITools = getOpenAITools();
 
         this._runningPlanner = null;
-        this.bdi             = null;
 
+        // Forward structured BDI messages into the memory inbox.
         asa.on('message', (parsed) => this.memory.pushInbox(parsed));
 
+        // Plain-text shouts from the game chat become natural-language objectives.
         asa.on('plain-text', ({ text, fromId, fromName }) => {
             console.log(`\n[llm-agent] new objective via game chat from ${fromName} (${fromId}): "${text}"`);
-            this.dispatchObjective(text, { id: fromId, name: fromName });
+            this.dispatchObjective(text);
         });
     }
 
+    /** Wait until both the game state and the runtime are ready. */
     async ready() {
         await this.client.ready();
     }
 
-    startStandardLoop() {
-        const build = () => {
-            if (this.bdi) return;
-            this.bdi = new BdiAgent({ client: this.client, asa: this.asa });
-            this.bdi.start();
-            console.log('[llm-agent] embedded BDI baseline started (controls the LLM character when idle)');
-        };
-        if (this.client.state.map && this.client.state.map.size > 0) build();
-        else this.client.once('map', build);
-    }
-
-    _pauseBdi(reason) {
-        if (!this.bdi) return;
-        this.bdi.beliefs.constraints.pauseUntilResume = true;
-        this.bdi.beliefs.currentPlan = null;
-        console.log(`[llm-agent] BDI baseline paused (${reason})`);
-    }
-
-    _resumeBdi() {
-        if (!this.bdi) return;
-        this.bdi.beliefs.constraints.pauseUntilResume = false;
-        console.log('[llm-agent] BDI baseline resumed');
-    }
-
-    async dispatchObjective(text, sender = null) {
+    /** Set a new natural-language objective and start (or replan) the planner. */
+    async dispatchObjective(text) {
         if (!text) return;
-        console.log(`\n=== NEW OBJECTIVE${sender ? ` from ${sender.name || sender.id}` : ''}: ${text} ===`);
-        this.memory.setObjective(text, sender);
+        console.log(`\n=== NEW OBJECTIVE: ${text} ===`);
+        this.memory.setObjective(text);
 
         if (this._runningPlanner) {
-
+            // The running loop will pick up the new objective via shouldReplan.
             return;
         }
-
-        this._pauseBdi('special mission incoming');
-        await sleep(120);
-
         const planner = new Planner({
-            llmClient:   this.llmClient,
-            model:       this.model,
-            memory:      this.memory,
-            tools:       this.tools,
-            asa:         this.asa,
-            maxIterations: 12
+            llmClient: this.llmClient,
+            model: this.model,
+            memory: this.memory,
+            toolImpls: this.toolImpls,
+            openAITools: this.openAITools,
+            maxIterations: 30
         });
-        this._runningPlanner = planner.run().finally(() => {
-            this._runningPlanner = null;
-            this._resumeBdi();
-        });
+        this._runningPlanner = planner.run().finally(() => { this._runningPlanner = null; });
     }
 
+    /** Snapshot of memory for debug/observability. */
     snapshot() { return this.memory.snapshot(); }
 }

@@ -1,3 +1,9 @@
+// Thin wrapper around the Deliveroo socket that:
+//   - keeps a WorldState mirror of all sensing events
+//   - exposes the action verbs (move/pickup/putdown/shout/say)
+//   - emits high-level events both agents care about ('parcel-lost', etc.)
+//
+// Composition: agents take a GameClient and add their own state on top.
 
 import { EventEmitter } from 'node:events';
 import { WorldState } from './WorldState.js';
@@ -12,6 +18,7 @@ export class GameClient extends EventEmitter {
         this._wireSocket();
     }
 
+    /** Resolve once map + initial 'you' have arrived, so callers can start. */
     ready() {
         return new Promise(resolve => {
             const check = () => {
@@ -25,12 +32,16 @@ export class GameClient extends EventEmitter {
         });
     }
 
+    // -------------------------------------------------------- Actions
+
     move(direction)   { return this.socket.emitMove(direction); }
     pickup()          { return this.socket.emitPickup(); }
     putdown(selected) { return this.socket.emitPutdown(selected); }
     shout(msg)        { return this.socket.emitShout(msg); }
     say(toId, msg)    { return this.socket.emitSay(toId, msg); }
     ask(toId, msg)    { return this.socket.emitAsk(toId, msg); }
+
+    // -------------------------------------------------------- Socket wiring
 
     _wireSocket() {
         const s = this.socket;
@@ -97,6 +108,7 @@ export class GameClient extends EventEmitter {
             });
         }
 
+        // Drop parcels we should have seen but didn't — they vanished.
         if (st.me.x !== undefined) {
             for (const [id, p] of st.parcels.entries()) {
                 if (p.carriedBy === st.me.id) continue;
@@ -123,6 +135,8 @@ export class GameClient extends EventEmitter {
             st.agents.set(a.id, { ...a, prev, lastSeen: now });
         }
 
+        // Forget agents that should have been seen but weren't (they moved
+        // out of vision) — same logic the original BDI used.
         for (const [id, a] of st.agents.entries()) {
             if (seenIds.has(id)) continue;
             const d = manhattan(st.me, a);

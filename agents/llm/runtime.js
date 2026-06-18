@@ -1,3 +1,5 @@
+// Ollama runtime bootstrap: ensures the daemon is running and the requested
+// model is installed before the agent tries to call it.
 
 import { spawn } from 'node:child_process';
 import { setTimeout as wait } from 'node:timers/promises';
@@ -116,6 +118,9 @@ function installCleanup() {
     process.on('SIGTERM', () => { kill(); process.exit(0); });
 }
 
+/**
+ * Boot Ollama and the requested model. Returns { host, model, openaiBaseURL }.
+ */
 export async function ensureOllama({ host = DEFAULT_HOST, model } = {}) {
     if (!model) throw new Error('ensureOllama: model is required');
 
