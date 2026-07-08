@@ -13,10 +13,7 @@ import depth_search_daemon from "./depth_search_daemon.js";
  * @type {import("@unitn-asa/deliveroo-js-sdk/types/IOParcel.js").IOParcel}
  */
 
-const client = DjsConnect(
-    'http://localhost:8080',
-    'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpZCI6IjA5ZmQ2NDllNzZlIiwibmFtZSI6Im1hcmNvIiwiaWF0IjoxNjc5OTk3Njg2fQ.6_zmgL_C_9QgoOX923ESvrv2i2_1bgL_cWjMw4M7ah4'
-)
+const client = DjsConnect()
 const depth_search = depth_search_daemon(client);
 
 // function distance( {x:x1, y:y1}, {x:x2, y:y2}) {
@@ -25,8 +22,10 @@ const depth_search = depth_search_daemon(client);
 //     return dx + dy;
 // }
 
-function distance( {x:x1, y:y1}, {x:x2, y:y2} ) {
-    return depth_search( {x:x1, y:y1}, {x:x2, y:y2} ).length;
+function distance( {x:x1, y:y1}, {x:x2, y:y2}) {
+    const dx = Math.abs( Math.round(x1) - Math.round(x2) )
+    const dy = Math.abs( Math.round(y1) - Math.round(y2) )
+    return dx + dy;
 }
 
 
@@ -35,20 +34,20 @@ function distance( {x:x1, y:y1}, {x:x2, y:y2} ) {
  * Beliefset revision function
  */
 /** @type  {me } */
-const me = { id:undefined, name:undefined, x:undefined, y:undefined, score:undefined, carrying: new Map() };
+const me = { id:'', name:'', x:-1, y:-1, score:0, carrying: new Map() };
 client.onYou( ( {id, name, x, y, score} ) => {
     me.id = id
     me.name = name
-    me.x = x
-    me.y = y
+    me.x = x ? x : me.x
+    me.y = y ? y : me.y
     me.score = score
 } )
 
 const parcels = new Map();
 const sensingEmitter = new EventEmitter();
-client.onParcelsSensing( async ( sensing ) => {
+client.onSensing( async ( sensing ) => {
     let new_parcel_sensed = false;
-    for (const {parcel: p} of sensing) {
+    for (const p of sensing.parcels) {
         if ( ! parcels.has(p.id) )
             new_parcel_sensed = true;
         parcels.set( p.id, p)
@@ -57,7 +56,7 @@ client.onParcelsSensing( async ( sensing ) => {
         }
     }
     for ( const [id,p] of parcels.entries() ) {
-        if ( ! sensing.find( ({parcel: p}) => p.id==id ) ) {
+        if ( ! sensing.parcels.find( parcel => parcel.id==id ) ) {
             parcels.delete( id ); 
             me.carrying.delete( id );
         }
@@ -70,7 +69,7 @@ var AGENTS_OBSERVATION_DISTANCE
 var MOVEMENT_DURATION
 var PARCEL_DECADING_INTERVAL
 client.onConfig( (config) => {
-    AGENTS_OBSERVATION_DISTANCE = config.GAME.player.agents_observation_distance;
+    AGENTS_OBSERVATION_DISTANCE = config.GAME.player.observation_distance;
     MOVEMENT_DURATION = config.GAME.player.movement_duration;
     PARCEL_DECADING_INTERVAL = config.GAME.parcels.decaying_event == '1s' ? 1000 : 1000000;
 } );
@@ -359,7 +358,7 @@ class DepthSearchMove extends Plan {
         
         while ( me.x != x && me.y != y ) {
 
-            const plan = depth_search(me, {x, y})
+            const plan = await depth_search(me, {x, y})
     
             // client.socket.emit( "path", plan.map( step => step.current ) );
 

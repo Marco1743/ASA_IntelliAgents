@@ -8,14 +8,14 @@ const socket = DjsConnect();
 /**
  * @type { {id:string, name:string, x:number, y:number, score:number} }
  */
-const me = {id: null, name: null, x: null, y: null, score: null};
+const me = {id: '', name: '', x: -1, y: -1, score: 0};
 
 socket.onYou( ( {id, name, x, y, score} ) => {
     // console.log( 'me:', me.x, me.y );
     me.id = id;
     me.name = name;
-    me.x = x;
-    me.y = y;
+    me.x = x ? x : me.x;
+    me.y = y ? y : me.y;
     me.score = score;
 } )
 
@@ -26,14 +26,15 @@ socket.onYou( ( {id, name, x, y, score} ) => {
  */
 const parcels = new Map();
 
-socket.onParcelsSensing( async ( pp ) => {
-    for ( let p of pp ) {
+socket.onSensing( async ( sensing ) => {
+    for ( let p of sensing.parcels ) {
         parcels.set( `${p.x}_${p.y}`, p );
     }
 } )
 
 
 
+/** @type { function ({x:number, y:number}, {x:number, y:number}): number } */
 function distance( {x:x1, y:y1}, {x:x2, y:y2} ) {
     const dx = Math.abs( Math.round(x1) - Math.round(x2) )
     const dy = Math.abs( Math.round(y1) - Math.round(y2) )
@@ -41,7 +42,9 @@ function distance( {x:x1, y:y1}, {x:x2, y:y2} ) {
 }
 
 
-
+/**
+ * @param { {x: number, y:number} } target 
+ */
 async function blindMove ( target ) {
     
     console.log(me.name, 'goes from', me.x, me.y, 'to', target.x, target.y);

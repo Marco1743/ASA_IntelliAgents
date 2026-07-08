@@ -7,27 +7,27 @@ const beliefset = new Map();
 
 socket.onConfig( config => {
     console.log('Config:', config);
-    console.log('Agents observation distance:', config.GAME.player.agents_observation_distance);
+    console.log('Agents observation distance:', config.GAME.player.observation_distance);
 })
 socket.onMap( (x,y,tiles) => {
-    console.log('Map:', x,y,tiles);
+    // console.log('Map:', x,y,tiles);
 } )
 
 socket.onYou( me => {
     // console.log('You:', me);
 })
-socket.onAgentsSensing( ( agents ) => {
+socket.onSensing( ( sensing ) => {
 
-    for ( let {agent: a} of sensing ) {
-        beliefset.set( a.id, a );
-    }
+    // for ( let a of sensing.agents ) {
+    //     beliefset.set( a.id, a );
+    // }
 
-    let prettyPrint = Array
-    .from(beliefset.values())
-    .map( ({name,x,y,score}) => {
-        return `${name}(${score}):${x},${y}`;
-    } ).join(' ');
-    console.log(prettyPrint)
+    // let prettyPrint = Array
+    // .from(beliefset.values())
+    // .map( ({name,x,y,score}) => {
+    //     return `${name}(${score}):${x},${y}`;
+    // } ).join(' ');
+    // console.log(prettyPrint)
 
 } )
 

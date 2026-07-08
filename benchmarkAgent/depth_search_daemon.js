@@ -1,5 +1,6 @@
 import { DjsClientSocket } from "@unitn-asa/deliveroo-js-sdk/client";
 
+/** @type { function ({x:number, y:number}, {x:number, y:number}): number } */
 function distance( {x:x1, y:y1}, {x:x2, y:y2}) {
     const dx = Math.abs( Math.round(x1) - Math.round(x2) )
     const dy = Math.abs( Math.round(y1) - Math.round(y2) )
@@ -8,16 +9,18 @@ function distance( {x:x1, y:y1}, {x:x2, y:y2}) {
 
 export default function ( /**@type {DjsClientSocket}*/socket ) {
     
-    var AGENTS_OBSERVATION_DISTANCE
+    /** @type { number } */
+    var OBSERVATION_DISTANCE
+    /** @type { number } */
     var MOVEMENT_DURATION
     socket.onConfig( (config) => {
-        AGENTS_OBSERVATION_DISTANCE = config.GAME.player.agents_observation_distance;
+        OBSERVATION_DISTANCE = config.GAME.player.observation_distance;
         MOVEMENT_DURATION = config.GAME.player.movement_duration;
     } );
     
     /**
      * @typedef tile
-     * @type { { x: number, y: number, type: string, locked?: boolean, cost_to_here?: number, previous_tile?: tile, action_from_previous? } }
+     * @type { { x: number, y: number, type: string, locked?: boolean, cost_to_here?: number, previous_tile?: tile, action_from_previous?: string } }
      */
     /**
      * @type {Map<string, tile>}
@@ -28,24 +31,24 @@ export default function ( /**@type {DjsClientSocket}*/socket ) {
         map.set(x+'_'+y, {x, y, type})
     } );
     
-    var me = {x:undefined, y:undefined};
+    var me = {x:-1, y:-1};
     socket.onYou( ( {x, y} ) => {
-        me.x = x;
-        me.y = y;
+        me.x = x ? x : me.x;
+        me.y = y ? y : me.y;
     } );
 
     const agents = new Map()
-    socket.onAgentsSensing( ( sensing ) => {
-        for ( const { agent: {id, name, x, y, score} } of sensing ) {
+    socket.onSensing( ( sensing ) => {
+        for ( const {id, name, x, y, score} of sensing.agents ) {
             agents.set(id, {id, x, y} );
         }
         for ( const [id, {x, y}] of agents.entries() ) {
-            if ( distance (me, {x, y}) < AGENTS_OBSERVATION_DISTANCE && ! sensing.find( ({agent}) => id == agent.id ) )
+            if ( distance (me, {x, y}) < OBSERVATION_DISTANCE && ! sensing.agents.find( ({id: agent_id}) => id == agent_id ) )
             agents.delete(id);
         }
     } );
 
-    return function ( {x:init_x, y:init_y}, {x:target_x, y:target_y} ) {
+    return async function ( {x:init_x, y:init_y}, {x:target_x, y:target_y} ) {
         
         init_x = Math.round(init_x);
         init_y = Math.round(init_y);
@@ -62,11 +65,33 @@ export default function ( /**@type {DjsClientSocket}*/socket ) {
 
         // console.log('go from', me.x, me.y, 'to', target_x, target_y);
 
-        function search (cost, x, y, previous_tile, action_from_previous) {
+        /**
+         * 
+         * @param {number} cost 
+         * @param {number} x 
+         * @param {number} y 
+         * @param {tile} previous_tile 
+         * @param {string} action_from_previous 
+         * @returns 
+         */
+        async function search (cost, x, y, previous_tile, action_from_previous) {
 
-            if( ! map.has(x+'_'+y) || map.get(x+'_'+y).type == '0' || map.get(x+'_'+y).locked )
-                return false;
+            const currentTile = map.get(x+'_'+y);
             
+            if ( ! currentTile || currentTile.type == '0' || currentTile.locked )
+                return false;
+
+            if ( previous_tile && ["←", "↑", "→", "↓"].includes(currentTile.type) ) {
+                if ( x == previous_tile.x + 1 && currentTile.type == '←' ) // I want right but there's a left arrow
+                    return false;
+                if ( x == previous_tile.x - 1 && currentTile.type == '→' ) // I want left but there's a right arrow
+                    return false;
+                if ( y == previous_tile.y + 1 && currentTile.type == '↓' ) // I want up but there's a down arrow
+                    return false;
+                if ( y == previous_tile.y - 1 && currentTile.type == '↑' ) // I want down but there's an up arrow
+                    return false;
+            }
+                
             const tile = map.get(x+'_'+y)
             if( tile.cost_to_here <= cost)
                 return false;
@@ -97,14 +122,14 @@ export default function ( /**@type {DjsClientSocket}*/socket ) {
                 return distance({x: target_x, y: target_y}, {x: a[1], y: a[2]}) - distance({x: target_x, y: target_y}, {x: b[1], y: b[2]})
             } )
 
-            search( ...options[0] )
-            search( ...options[1] )
-            search( ...options[2] )
-            search( ...options[3] )
+            await search( ...options[0] )
+            await search( ...options[1] )
+            await search( ...options[2] )
+            await search( ...options[3] )
             
         }
 
-        search(0, init_x, init_y);
+        await search(0, init_x, init_y);
 
         // console.log('map.get', target_x+'_'+target_y, 'in', Array.from(map.values()).map( t => t.x+'_'+t.y ).join(', '))
         let dest = map.get(target_x+'_'+target_y);

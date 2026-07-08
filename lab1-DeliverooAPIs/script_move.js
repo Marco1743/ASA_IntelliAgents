@@ -1,5 +1,5 @@
 import 'dotenv/config'
-import { DjsConnect } from "@unitn-asa/deliveroo-js-sdk/client";
+import { DjsConnect, DjsClientSocket } from "@unitn-asa/deliveroo-js-sdk/client";
 
 const socket = DjsConnect()
 
@@ -10,7 +10,7 @@ async function myFn () {
     
 }
 
-// myFn ()
+myFn ()
 
 socket.on( 'tile', (x, y, delivery) => {
     console.log(x, y, delivery)

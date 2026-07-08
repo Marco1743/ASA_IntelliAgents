@@ -1,3 +1,3 @@
 #!/usr/bin/env node
-import { DjsConnect, DjsClientSocket, DjsRestClient } from "@unitn-asa/deliveroo-js-sdk";
-import * as pddlClient from "@unitn-asa/pddl-client";
+// Default entry: run the BDI agent (Agent A).
+import './BDI_agent.js';

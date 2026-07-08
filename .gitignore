@@ -28,3 +28,13 @@ bin
 
 # Deliveroo.js submodule repository
 Deliveroo.js
+
+# Fast Downward (cloned + built locally via `npm run setup:pddl`)
+lib/downward/
+# PDDL work files written at runtime
+pddl/tmp_*/
+pddl/deliveroo-domain.pddl
+
+*.pdf
+
+*.md
