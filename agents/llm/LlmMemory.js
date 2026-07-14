@@ -1,7 +1,6 @@
 import * as tools from './tools.js';
 
-// LLM-memory: live observations of the environment + active rules + a short
-// history of past decisions, rebuilt from the world model on each request.
+// llm memory
 export class LlmMemory {
 
     constructor(client, bdi) {
@@ -10,6 +9,7 @@ export class LlmMemory {
         this.history = [];
     }
 
+    // observations
     observations() {
         const st = this.client.state;
         return {
@@ -23,6 +23,7 @@ export class LlmMemory {
         };
     }
 
+    // context
     context() {
         return {
             observations: this.observations(),
@@ -30,6 +31,7 @@ export class LlmMemory {
         };
     }
 
+    // history
     remember(mission, decision) {
         this.history.push({ mission, decision: { kind: decision.kind, summary: decision.summary } });
         if (this.history.length > 10) this.history.shift();

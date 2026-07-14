@@ -1,4 +1,4 @@
-// Pure geometry helpers (no game state), shared by every agent.
+// geometry helpers
 
 export const DIRECTIONS = Object.freeze([
     { dir: 'up',    dx: 0,  dy: 1  },
@@ -22,7 +22,7 @@ export function getClosest(from, candidates) {
     return best;
 }
 
-// one-way arrow tiles cannot be entered against their direction
+// one-way tiles
 export function tileBlocksFromDirection(tileType, dir) {
     const t = String(tileType);
     return (dir === 'left'  && t === '→')
@@ -31,7 +31,7 @@ export function tileBlocksFromDirection(tileType, dir) {
         || (dir === 'down'  && t === '↑');
 }
 
-// min-heap keyed on node.f, used as the A* open set
+// min-heap (A* open set)
 export class MinHeap {
     constructor() { this.heap = []; }
 

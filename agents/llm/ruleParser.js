@@ -1,13 +1,11 @@
-// Deterministic regex parser for the canonical L2/L3 mission phrasings. Used as a
-// fallback when the LLM can't produce a usable decision. Returns the effect object
-// (same shape BdiAgent.applyRule / Coordinator.handle consume) or null.
+// fallback parser (L2/L3)
 
 const coordsIn = text => [...text.matchAll(/\(\s*(-?\d+)\s*,\s*(-?\d+)\s*\)/g)]
     .map(m => [Number(m[1]), Number(m[2])]);
 
-// matches "no reward" / "0 pts" / "zero" — \b stops "10pts" matching "0pts"
 const ZERO_REWARD = /(no reward|\b0\s*(?:pts|points)\b|\bzero\b)/;
 
+// L2 rules
 export function detectRule(text) {
     const t = String(text).toLowerCase();
 
@@ -38,8 +36,6 @@ export function detectRule(text) {
         }
     }
 
-    // require an explicit multiplier or zero-reward signal, so a one-shot
-    // "deliver to (x,y) for +10" goal isn't misread as a no-op 1x zone rule
     if (/deliver(?:ing|y)?\s+(?:in|at|to)/.test(t)) {
         const tiles = coordsIn(t);
         if (tiles.length) {
@@ -56,6 +52,7 @@ export function detectRule(text) {
     return null;
 }
 
+// L3 coordination
 export function detectCoordination(text) {
     const t = String(text).toLowerCase();
     const tiles = coordsIn(t);
@@ -71,7 +68,6 @@ export function detectCoordination(text) {
         return { task: 'red_light', parity, reward: reward() };
     }
 
-    // the follow-up "go" that releases a red-light hold
     if (/(green ?light|\bresume\b|\bproceed\b|go now|you (?:can|may)\b[^.!?]*\b(?:go|move|continue)|lights? (?:are )?green|carry on)/.test(t)) {
         return { task: 'resume' };
     }

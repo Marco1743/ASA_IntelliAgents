@@ -1,5 +1,4 @@
-// Split a message into separate missions on newlines, semicolons or list markers
-// (not on '.', so multi-sentence missions stay whole). Always returns >= 1 entry.
+// mission split
 export function splitMissions(text) {
     const raw = String(text ?? '').trim();
     if (!raw) return [];
@@ -10,7 +9,7 @@ export function splitMissions(text) {
     return parts.length ? parts : [raw];
 }
 
-// Parse a JSON object from an LLM reply (strips ``` fences); null on failure.
+// json parsing
 export function safeJsonParse(text) {
     if (typeof text !== 'string') return null;
     const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();
@@ -23,7 +22,6 @@ export function safeJsonParse(text) {
     }
 }
 
-// Parse a JSON array from an LLM reply; null on failure.
 export function parseJsonArray(text) {
     if (typeof text !== 'string') return null;
     const cleaned = text.replace(/```json/gi, '').replace(/```/g, '').trim();

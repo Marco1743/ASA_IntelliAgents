@@ -8,10 +8,7 @@ import { DOMAIN_STRING, buildProblem, actionToDirection } from './pddlModel.js';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..', '..');
 
-// PDDL motion planner using a LOCAL Fast Downward binary (default solver, like the
-// reference). Writes domain + problem to disk, runs fast-downward.py, parses the
-// plan. If the binary isn't built it returns null and the agent uses A*.
-// Env: PYTHON_CMD, DOWNWARD_PATH, FD_SEARCH, AGENT_INSTANCE.
+// pddl planner (local fast downward)
 export class FastDownwardPathfinder {
 
     constructor(map, opts = {}) {
@@ -29,7 +26,7 @@ export class FastDownwardPathfinder {
         this.planFile   = join(this.instDir, 'plan');
 
         this._available = null;
-        this._busy = false; // at most one solve at a time (file-based I/O)
+        this._busy = false;
     }
 
     _ensureSetup() {
@@ -38,7 +35,7 @@ export class FastDownwardPathfinder {
         this._available = existsSync(this.downward) && built;
         if (!this._available) {
             console.log(`[fd] Fast Downward not built — PDDL disabled, using A*.`);
-            console.log('[fd] Build it once with: npm run setup:pddl  (see agents/README.md).');
+            console.log('[fd] Build it once with: npm run setup:pddl');
             return false;
         }
         mkdirSync(this.instDir, { recursive: true });
@@ -47,6 +44,7 @@ export class FastDownwardPathfinder {
         return true;
     }
 
+    // solve
     async findPath(start, target, opts = {}) {
         if (!start || !target || start.x === undefined) return null;
         const sx = Math.round(start.x), sy = Math.round(start.y);
@@ -74,7 +72,7 @@ export class FastDownwardPathfinder {
             });
 
             if (!existsSync(this.planFile)) {
-                // no plan file: target currently unreachable; A* covers it (benign)
+                // fallback to A*
                 const why = err?.killed ? `timed out (${this.timeoutMs}ms)`
                           : err ? `no path to target (exit ${err.code})`
                           : 'no plan';
@@ -92,12 +90,13 @@ export class FastDownwardPathfinder {
         }
     }
 
+    // plan parsing
     _parsePlan(text) {
         const out = [];
         for (const line of text.split('\n')) {
             const t = line.trim();
-            if (!t.startsWith('(')) continue;           // skip "; cost = N" trailer
-            const action = t.slice(1).split(/\s+/)[0];  // "move-up"
+            if (!t.startsWith('(')) continue;
+            const action = t.slice(1).split(/\s+/)[0];
             const dir = actionToDirection(action);
             if (dir) out.push(dir);
         }

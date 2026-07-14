@@ -1,6 +1,4 @@
-// Agent B — the LLM agent (separate player, LLM_TOKEN). Plays normally via a BDI
-// core; the LLM layer interprets special missions and feeds them to the BDI.
-// Missions arrive from the game ('msg') or the terminal. Levels 1, 2 & 3.
+// agent B (llm)
 
 import 'dotenv/config';
 import { DjsConnect } from '@unitn-asa/deliveroo-js-sdk/client';
@@ -34,15 +32,16 @@ const agent = new LlmAgent({ client, bdi, llm, coordinator, team });
 client.on('connect',    () => console.log('[llm] connected to game'));
 client.on('disconnect', () => console.log('[llm] disconnected, waiting for reconnect...'));
 
+// team filter + missions
 client.on('msg', ({ fromId, fromName, msg, replyAck }) => {
-    if (team.ingest(fromId, fromName, msg, replyAck)) return; // team-internal
+    if (team.ingest(fromId, fromName, msg, replyAck)) return;
     agent.handleMessage(msg, fromId).catch(err => console.log(`[llm] mission error: ${err.message}`));
 });
 
 bdi.start();
 team.start();
 
-// terminal input for manual mission testing
+// manual mission console
 const rl = readline.createInterface({ input, output });
 await client.ready();
 console.log('[llm] ready. Agent B is playing; type a mission (or "exit"). Missions also arrive from the game.');

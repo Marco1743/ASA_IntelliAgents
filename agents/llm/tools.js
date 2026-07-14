@@ -1,16 +1,21 @@
+// tool: calculate (arithmetic only)
 export function calculate(expression) {
+    const expr = String(expression).trim();
+    if (!/^[\d+\-*/(). %\s]+$/.test(expr)) return 'Error: only arithmetic expressions are allowed';
     try {
-        return String(eval(String(expression)));
+        return String(eval(expr));
     } catch (err) {
         return `Error: ${err.message}`;
     }
 }
 
+// tool: my position
 export function getMyPosition(state) {
     if (state.me.x === undefined) return null;
     return { x: Math.round(state.me.x), y: Math.round(state.me.y), score: state.me.score };
 }
 
+// tool: parcels
 export function getParcels(state) {
     return state.freeParcels.map(p => ({ id: p.id, x: p.x, y: p.y, reward: p.reward }));
 }
@@ -25,8 +30,7 @@ export function walkableTiles(state) {
     return out;
 }
 
-// where: "leftmost" | "rightmost" | "topmost" | "bottommost" — returns the middle
-// tile of the extreme row/column (pass deliveryZones for "leftmost delivery tile").
+// relative positions
 export function resolveRelative(tiles, where) {
     if (!tiles || tiles.length === 0) return null;
     const mid = arr => arr[Math.floor(arr.length / 2)];
@@ -37,6 +41,7 @@ export function resolveRelative(tiles, where) {
     return null;
 }
 
+// tool: map info
 export function getMapInfo(state) {
     const walkable = walkableTiles(state);
     if (walkable.length === 0) return null;
@@ -51,8 +56,7 @@ export function getMapInfo(state) {
     };
 }
 
-// read-only tools the LLM planner may call while reasoning (catalog text shown to
-// the model; execTool runs one by name). They never move the agent.
+// tool catalog
 export const TOOL_CATALOG = [
     'calculate(expression): evaluate arithmetic, e.g. "4*2" or "(1+3)*3"',
     'get_my_position(): the agent\'s current {x, y, score}',
@@ -60,6 +64,7 @@ export const TOOL_CATALOG = [
     'get_map_info(): {width, height, deliveryZones, leftmost, rightmost, topmost, bottommost}'
 ];
 
+// tool call
 export function execTool(name, input, state) {
     switch (String(name).trim()) {
         case 'calculate':        return calculate(input);

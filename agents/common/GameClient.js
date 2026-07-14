@@ -2,10 +2,9 @@ import { EventEmitter } from 'node:events';
 import { WorldState } from './WorldState.js';
 import { manhattan } from './geometry.js';
 
-const AGENT_FORGET_MS = 5000; // how long to remember an enemy after it leaves vision
+const AGENT_FORGET_MS = 5000;
 
-// Wraps the Deliveroo SDK socket: keeps one WorldState up to date from sensing,
-// exposes the actions as methods, and re-emits events so any agent can subscribe.
+// socket wrapper + sensing
 export class GameClient extends EventEmitter {
 
     constructor(socket) {
@@ -15,7 +14,6 @@ export class GameClient extends EventEmitter {
         this._wireSocket();
     }
 
-    // resolves once we have a position and at least one delivery zone
     ready() {
         return new Promise(resolve => {
             const check = () => {
@@ -29,7 +27,7 @@ export class GameClient extends EventEmitter {
         });
     }
 
-    // --- Actions -----------------------------------------------------------
+    // actions
     move(direction)   { return this.socket.emitMove(direction); }
     pickup()          { return this.socket.emitPickup(); }
     putdown(selected) { return this.socket.emitPutdown(selected); }
@@ -37,7 +35,7 @@ export class GameClient extends EventEmitter {
     say(toId, msg)    { return this.socket.emitSay(toId, msg); }
     ask(toId, msg)    { return this.socket.emitAsk(toId, msg); }
 
-    // --- Sensing / belief updates ------------------------------------------
+    // sensing
     _wireSocket() {
         const s = this.socket;
         const st = this.state;
@@ -78,6 +76,7 @@ export class GameClient extends EventEmitter {
         s.on('sensing', (data) => {
             if (data.parcels) this._handleParcels(data.parcels);
             if (data.agents)  this._handleAgents(data.agents);
+            if (data.crates)  this._handleCrates(data.crates);
             this.emit('sensing', data);
         });
 
@@ -88,8 +87,7 @@ export class GameClient extends EventEmitter {
         }
     }
 
-    // belief revision for parcels: add/update sensed ones, forget ones that should
-    // be visible but are no longer reported
+    // belief revision: parcels
     _handleParcels(sensed) {
         const st = this.state;
         const seen = new Set();
@@ -120,8 +118,30 @@ export class GameClient extends EventEmitter {
         this.emit('parcels', { sensedIds: seen });
     }
 
-    // belief revision for agents: update sensed ones, keep recently-seen ones for a
-    // short grace period, forget the rest
+    // belief revision: crates
+    _handleCrates(sensed) {
+        const st = this.state;
+        const seen = new Set();
+
+        for (const c of sensed) {
+            if (!c.id) continue;
+            seen.add(c.id);
+            st.crates.set(c.id, { id: c.id, x: c.x, y: c.y });
+        }
+
+        if (st.me.x !== undefined) {
+            for (const [id, c] of st.crates.entries()) {
+                const d = manhattan(st.me, c);
+                if (d < st.config.vision && !seen.has(id)) {
+                    st.crates.delete(id);
+                }
+            }
+        }
+
+        this.emit('crates', { sensedIds: seen });
+    }
+
+    // belief revision: agents
     _handleAgents(sensed) {
         const st = this.state;
         const now = Date.now();

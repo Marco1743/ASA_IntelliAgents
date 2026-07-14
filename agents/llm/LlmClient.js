@@ -1,12 +1,11 @@
 import 'dotenv/config';
 import OpenAI from 'openai';
 
-// Thin wrapper around the hosted LLM (OpenAI-compatible API). The client is
-// injectable so the agent can be tested with a fake.
+// llm client
 export class LlmClient {
 
     constructor(opts = {}) {
-        this.model = opts.model || process.env.LLM_MODEL || 'llama-3.3-70b-lmstudio';
+        this.model = opts.model || process.env.LLM_MODEL || 'llama-3.3-70b';
         this.defaultTemperature = opts.temperature ?? 0.1;
         this._client = opts.client || new OpenAI({
             baseURL: opts.baseURL || process.env.LITELLM_BASE_URL || 'https://llm.bears.disi.unitn.it/v1',

@@ -1,15 +1,15 @@
-// Sensed game state from the server (self, map, parcels, agents, zones, config),
-// shared by both agents. Agent-private memory lives in bdi/BdiBeliefs.js.
+// sensed world state
 export class WorldState {
     constructor() {
         this.me = { id: null, name: null, x: undefined, y: undefined, score: 0 };
 
-        this.map = new Map();   // "x,y" -> tile type
+        this.map = new Map();
         this.mapWidth = 0;
         this.mapHeight = 0;
 
-        this.parcels = new Map(); // id -> { id, x, y, reward, carriedBy }
-        this.agents  = new Map(); // id -> sensed agent
+        this.parcels = new Map();
+        this.agents  = new Map();
+        this.crates  = new Map();
 
         this.deliveryZones = [];
         this.spawnZones    = [];
@@ -18,7 +18,7 @@ export class WorldState {
             capacity: 5,
             vision: 5,
             clock: 50,
-            movementDuration: 0 // ms per move step (0 = unknown; callers default to 500)
+            movementDuration: 0
         };
     }
 

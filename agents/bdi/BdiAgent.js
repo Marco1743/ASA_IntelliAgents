@@ -6,24 +6,22 @@ import { getBestParcel, getBestSpawnZone, getRandomExploreTarget, shouldDeliverN
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-// BDI control loop: sense -> deliberate -> select plan -> act.
+// bdi loop: sense -> deliberate -> plan -> act
 export class BdiAgent {
 
     constructor({ client, planner, pathfinder, fallbackPlanner = null, pddlPlanner = null, shouldYieldGoal = null }) {
         this.client     = client;
         this.beliefs    = new BdiBeliefs(client);
-        this.planner    = planner || pathfinder;   // fast primary planner (A*)
+        this.planner    = planner || pathfinder;
         this.fallbackPlanner = fallbackPlanner;
-        this.pddlPlanner = pddlPlanner;             // optional background refiner
+        this.pddlPlanner = pddlPlanner;
         this._pddlBusy  = false;
-        this.shouldYieldGoal = shouldYieldGoal;     // team hook (closest-agent-commits)
+        this.shouldYieldGoal = shouldYieldGoal;
         this.executor   = new PlanExecutor(client, this.beliefs);
         this._missionSeq = 0;
     }
 
-    // Inject a one-shot L1 goal (from the LLM). Deliberation weighs it as one option
-    // among the parcels and pursues it only if it wins. goal:
-    // { kind:'goto'|'drop_at'|'pickup_at', x, y, reward, fromId?, summary? }
+    // L1 mission goal
     addMissionGoal(goal) {
         const id = `g${++this._missionSeq}`;
         this.beliefs.missionGoals.push({ id, ...goal });
@@ -31,18 +29,15 @@ export class BdiAgent {
         return id;
     }
 
-    // Apply a persistent L2 rule (from the LLM) into beliefs.constraints; true if
-    // recognised. rule = the interpreter's `effect`.
+    // L2 rule
     applyRule(rule) {
         const c = this.beliefs.constraints;
         const num = v => { const n = Number(v); return Number.isFinite(n) ? n : null; };
-        // a tile rule may name several tiles, or a single x/y
         const ruleTiles = () => {
             const toTile = t => Array.isArray(t) ? { x: num(t[0]), y: num(t[1]) } : { x: num(t.x), y: num(t.y) };
             const list = Array.isArray(rule.tiles) ? rule.tiles.map(toTile) : [{ x: num(rule.x), y: num(rule.y) }];
             return list.filter(t => t.x !== null && t.y !== null);
         };
-        // upsert by tile: a different tile coexists, the same tile updates
         const upsertTile = (list, x, y, fields) => {
             const e = list.find(t => t.x === x && t.y === y);
             if (e) Object.assign(e, fields); else list.push({ x, y, ...fields });
@@ -68,8 +63,8 @@ export class BdiAgent {
                 if (n && n > 0) {
                     const multiplier = num(rule.multiplier) ?? 1;
                     const existing = c.deliveryStacks.find(s => s.n === n);
-                    if (existing) existing.multiplier = multiplier; // same N overwrites
-                    else c.deliveryStacks.push({ n, multiplier });  // different N coexists
+                    if (existing) existing.multiplier = multiplier;
+                    else c.deliveryStacks.push({ n, multiplier });
                 }
                 break;
             }
@@ -82,9 +77,7 @@ export class BdiAgent {
         return true;
     }
 
-    // Set the active L3 coordination task (overrides normal play until cleared).
-    // notify(state, task) fires once per new state ('ready' on arrival, 'holding').
-    // task: { type:'goto_wait'|'hold'|'relay'|'red_light', x?, y?, dist?, ... }
+    // L3 coordination
     setCoordination(task, notify = null) {
         this.beliefs.coordination = { state: 'going', ...task };
         this._coordNotify = notify;
@@ -130,8 +123,6 @@ export class BdiAgent {
                 this.beliefs.pruneStale(now);
                 this.beliefs.pruneExpiredParcels(this.client.state, now);
 
-                // grab a free parcel we're standing on (pickup first, so a parcel on
-                // a delivery tile is grabbed and delivered in one go)
                 await this._opportunisticPickup();
                 await this._opportunisticDelivery();
 
@@ -160,7 +151,7 @@ export class BdiAgent {
 
                     if (steps.length === 0) {
                         if (intention === 'mission') {
-                            this._completeMission(target._mission); // already on the tile
+                            this._completeMission(target._mission);
                             continue;
                         }
                         if (intention === 'patrol' || intention === 'explore') {
@@ -179,7 +170,7 @@ export class BdiAgent {
                     this.beliefs.metrics.plansBuilt++;
                     silentWait = 0;
 
-                    this._refineWithPddl(target, intention, targetId); // non-blocking
+                    this._refineWithPddl(target, intention, targetId);
                 }
 
                 const step = this.beliefs.currentPlan.steps[0];
@@ -197,14 +188,12 @@ export class BdiAgent {
         }
     }
 
-    // Intention selection with soft commitment: re-derive the active plan's
-    // intention, decide whether a new parcel justifies dropping it, then fall back
-    // to the deliver / pickup / patrol / explore priority.
+    // deliberation + intention revision
     _deliberate() {
         const st = this.client.state;
         const carrying = st.carrying;
 
-        if (this.beliefs.coordination) return this._coordinationDeliberate(); // L3 overrides
+        if (this.beliefs.coordination) return this._coordinationDeliberate();
 
         let target = null;
         let intention = null;
@@ -246,7 +235,7 @@ export class BdiAgent {
                 } else if (best.id !== target.id && this._betterParcel(planned, best)) {
                     invalidate = true;
                 } else if (best.id !== target.id && this.beliefs.isRaceLost(st, planned)) {
-                    // an enemy will beat us to it — give it up briefly and re-pick
+                    // race lost
                     this.beliefs.blacklistedTargets.set(planned.id, Date.now());
                     this.beliefs.metrics.racesLost++;
                     invalidate = true;
@@ -255,8 +244,7 @@ export class BdiAgent {
                        && carrying.length < st.config.capacity
                        && this._worthDivertingForPickup(best)
                        && !shouldDeliverNow(st, this.beliefs, best)) {
-                // heading to delivery with room: grab a parcel a short detour away,
-                // unless the decay model says delivering now is better
+                // detour pickup
                 invalidate = true;
             }
         } else if (intention === 'pickup' && (!target || st.parcels.get(target.id)?.carriedBy)) {
@@ -272,8 +260,6 @@ export class BdiAgent {
         if (!target) {
             const closestDelivery = getBestDeliveryZone(st, this.beliefs);
 
-            // a mission goal competes as one option: it wins only if its reward
-            // per step beats the best parcel's
             const mg = this._bestMissionGoal();
             const missionWins = mg && mg.rate >= (best ? this._parcelRate(best) : 0);
 
@@ -287,7 +273,6 @@ export class BdiAgent {
                 target = best;
                 intention = 'pickup';
             } else {
-                // idle: search for parcels rather than standing still
                 target = getBestSpawnZone(st, this.beliefs);
                 intention = 'patrol';
                 if (!target) {
@@ -304,9 +289,7 @@ export class BdiAgent {
         return { target, intention };
     }
 
-    // Deliberation while an L3 task is active. hold -> freeze; goto_wait/rendezvous/
-    // red_light -> go to within `dist` of (x,y) then wait. Reaching ready/holding
-    // fires notify once.
+    // L3 deliberation
     _coordinationDeliberate() {
         const st = this.client.state;
         const c = this.beliefs.coordination;
@@ -318,8 +301,6 @@ export class BdiAgent {
 
         if (c.type === 'relay') return this._relayDeliberate();
 
-        // red_light: pick this agent's nearest matching-parity row once, then
-        // fall through to goto_wait
         if (c.type === 'red_light' && c.x === undefined) {
             const t = this._nearestRowTile(c.parity);
             if (!t) { this._coordReach('holding'); return { target: null, intention: 'coord-hold' }; }
@@ -336,9 +317,7 @@ export class BdiAgent {
         return { target: { x: c.x, y: c.y }, intention: 'coord' };
     }
 
-    // Relay handoff: collector gathers parcels (ignoring the handoff pile) and
-    // ferries them to the handoff tile; deliverer waits beside it, picks them up and
-    // delivers — so each parcel is picked up by one agent and delivered by the other.
+    // relay roles
     _relayDeliberate() {
         const st = this.client.state;
         const c = this.beliefs.coordination;
@@ -366,7 +345,6 @@ export class BdiAgent {
         const here = st.freeParcels
             .filter(p => Math.round(p.x) === handoff.x && Math.round(p.y) === handoff.y);
         if (here.length) return { target: getClosest(st.me, here), intention: 'pickup' };
-        // wait one step off the handoff tile so we don't block the collector
         const wait = this._relayWaitTile(handoff);
         if (manhattan(st.me, wait) > 0) return { target: wait, intention: 'coord' };
         return { target: null, intention: 'coord-wait' };
@@ -405,7 +383,7 @@ export class BdiAgent {
         if (this._coordNotify) { try { this._coordNotify(state, c); } catch {} }
     }
 
-    // is `candidate` worth abandoning `planned` for, given how committed we are?
+    // soft commitment
     _betterParcel(planned, candidate) {
         const st = this.client.state;
         const closeRange = Math.max(2, Math.floor(st.config.vision * 0.4));
@@ -428,7 +406,7 @@ export class BdiAgent {
         return sCan > sCur * multiplier;
     }
 
-    // while carrying en route to delivery, is a parcel worth a short detour to grab?
+    // detour evaluation
     _worthDivertingForPickup(parcel) {
         if (!parcel || (parcel.reward || 0) <= 0) return false;
         const st = this.client.state;
@@ -451,7 +429,7 @@ export class BdiAgent {
         if (intention === 'mission') return `mission_${target._mission.id}`;
         if (intention === 'coord')   return 'coord';
         if (intention === 'relay_drop') return 'relay_drop';
-        return intention; // 'patrol' | 'explore'
+        return intention;
     }
 
     _parcelRate(parcel) {
@@ -464,16 +442,17 @@ export class BdiAgent {
         return reward / (d + (del ? manhattan(parcel, del) : 0) || 1);
     }
 
+    // mission goal vs parcels
     _bestMissionGoal() {
         const st = this.client.state;
         const now = Date.now();
         let best = null, bestRate = -Infinity;
         for (const g of this.beliefs.missionGoals) {
-            if ((g.reward || 0) <= 0) continue;                             // ignore traps
-            if (g.kind === 'drop_at' && st.carrying.length === 0) continue; // need a parcel
-            if (this.shouldYieldGoal && this.shouldYieldGoal(g)) continue;  // closer team-mate
+            if ((g.reward || 0) <= 0) continue;                             // trap
+            if (g.kind === 'drop_at' && st.carrying.length === 0) continue;
+            if (this.shouldYieldGoal && this.shouldYieldGoal(g)) continue;  // closest commits
             const bl = this.beliefs.blacklistedTargets.get(`${g.x},${g.y}`);
-            if (bl && now - bl < BLACKLIST_TTL_MS) continue;                // recently unreachable
+            if (bl && now - bl < BLACKLIST_TTL_MS) continue;                // blacklisted
             const rate = (g.reward || 0) / Math.max(manhattan(st.me, g), 1);
             if (rate > bestRate) { bestRate = rate; best = g; }
         }
@@ -489,7 +468,7 @@ export class BdiAgent {
         }
     }
 
-    // means-end: select the plan for the intention and build its action sequence
+    // means-end
     async _buildPlan(target, intention) {
         if (intention === 'mission') {
             const steps = await this._navigate(this.client.state.me, target);
@@ -497,7 +476,7 @@ export class BdiAgent {
             const kind = target._mission.kind;
             if (kind === 'drop_at')   steps.push('put_down');
             if (kind === 'pickup_at') steps.push('pick_up');
-            return steps; // 'goto' has no terminal action
+            return steps;
         }
         if (intention === 'coord') {
             return await this._navigate(this.client.state.me, target);
@@ -513,7 +492,7 @@ export class BdiAgent {
         return plan.build((from, to) => this._navigate(from, to), this.client.state.me, target);
     }
 
-    // navigation via the primary planner (A*), with the optional fallback
+    // navigation
     async _navigate(from, target) {
         const opts = this._plannerOpts();
         let steps = await this.planner.findPath(from, target, opts);
@@ -528,13 +507,12 @@ export class BdiAgent {
         return {
             obstacles: this.beliefs.obstacles,
             agents:    this.client.state.agents,
-            softCosts: this.beliefs.buildEnemyCostMap(this.client.state) // PddlPathfinder ignores this
+            crates:    this.client.state.crates,
+            softCosts: this.beliefs.buildEnemyCostMap(this.client.state)
         };
     }
 
-    // Optional PDDL extension, non-blocking: solve the same start->target in the
-    // background and swap the moves in only if it returns before we move and we're
-    // still on the same target (preserving the terminal action). One at a time.
+    // pddl background refine
     _refineWithPddl(target, intention, targetId) {
         if (!this.pddlPlanner || this._pddlBusy) return;
         const st = this.client.state;
@@ -558,7 +536,7 @@ export class BdiAgent {
             .finally(() => { this._pddlBusy = false; });
     }
 
-    // grab a free parcel on the current tile, independent of the plan (up to capacity)
+    // opportunistic pickup
     async _opportunisticPickup() {
         const st = this.client.state;
         if (st.me.x === undefined) return false;
@@ -566,11 +544,9 @@ export class BdiAgent {
 
         const mx = Math.round(st.me.x);
         const my = Math.round(st.me.y);
-        // relay collector: don't re-grab the pile we just dropped on the handoff tile
         const co = this.beliefs.coordination;
         if (co && co.type === 'relay' && co.role === 'collector'
             && co.handoff && co.handoff.x === mx && co.handoff.y === my) return false;
-        // reward_filter: only grab an over-cap parcel if rewards decay (else useless)
         const maxR = this.beliefs.constraints.parcelRewardMax;
         const canDecay = (this.beliefs.decayPerMs || 0) > 0;
         const here = st.freeParcels.filter(p =>
@@ -592,15 +568,12 @@ export class BdiAgent {
         return true;
     }
 
-    // delivery tile allowed by the zone-reward rule? (what/how-many to drop is
-    // decided by deliverySet)
     _opportunisticDeliveryOk(mx, my) {
         const zr = this.beliefs.constraints.deliveryZoneRewards.find(e => e.x === mx && e.y === my);
-        return !(zr && zr.multiplier <= 0); // never dump at a zero-point zone
+        return !(zr && zr.multiplier <= 0);
     }
 
-    // drop off when standing on a delivery tile, independent of the plan (but obey
-    // the zone-reward rule, and not as a relay collector)
+    // opportunistic delivery
     async _opportunisticDelivery() {
         const st = this.client.state;
         if (st.me.x === undefined) return false;
@@ -614,7 +587,6 @@ export class BdiAgent {
         if (!onDelivery) return false;
         if (!this._opportunisticDeliveryOk(mx, my)) return false;
 
-        // deliver successive groups while on the zone (a stack rule may need several)
         let deliveredAny = false;
         for (let guard = 0; guard < 12 && st.carrying.length > 0; guard++) {
             const ids = this.beliefs.deliverySet(st);
@@ -632,7 +604,6 @@ export class BdiAgent {
         return deliveredAny;
     }
 
-    // remove delivered parcels using the server's reported dropped list as truth
     _applyDropped(requestedIds, dropped, mx, my) {
         const st = this.client.state;
         const droppedIds = (Array.isArray(dropped) && dropped.length && dropped[0] && dropped[0].id !== undefined)
@@ -652,6 +623,7 @@ export class BdiAgent {
         return count;
     }
 
+    // spawn zone freshness
     _markCheckedZones(now) {
         const st = this.client.state;
         for (const z of st.spawnZones) {

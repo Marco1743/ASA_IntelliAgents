@@ -1,5 +1,4 @@
-// Agent A — the BDI agent. Plays normally and obeys L3 coordination directives /
-// L1-L2 shares forwarded by the LLM agent (B) over the team layer.
+// agent A (bdi)
 
 import 'dotenv/config';
 import { DjsConnect } from '@unitn-asa/deliveroo-js-sdk/client';
@@ -20,8 +19,7 @@ const client = new GameClient(socket);
 client.on('connect',    () => console.log('[bdi] connected to server'));
 client.on('disconnect', () => console.log('[bdi] disconnected, waiting for reconnect...'));
 
-// PDDL_SOLVER: fd (local Fast Downward) | online (HTTP solver)
-// PDDL_MODE:   background (A* drives, PDDL refines async) | primary (PDDL plans, A* fallback)
+// planner selection
 const astar = new Pathfinder(client.state.map);
 const SOLVER = (process.env.PDDL_SOLVER || 'fd').toLowerCase();
 const PDDL_MODE = (process.env.PDDL_MODE || 'background').toLowerCase();
@@ -45,6 +43,7 @@ const agent = new BdiAgent({ client, planner, fallbackPlanner, pddlPlanner,
 
 client.on('msg', ({ fromId, fromName, msg, replyAck }) => { team.ingest(fromId, fromName, msg, replyAck); });
 
+// coordination directives from B
 team.on('coord', ({ cmd, x, y, dist, role, handoff, parity }) => {
     if (cmd === 'rendezvous' || cmd === 'goto_wait') {
         const d = Number(dist);
@@ -64,8 +63,9 @@ team.on('coord', ({ cmd, x, y, dist, role, handoff, parity }) => {
 });
 team.on('signal', ({ name }) => { if (name === 'go' || name === 'release') agent.clearCoordination(); });
 
-team.on('rule', ({ rule }) => { if (rule) agent.applyRule(rule); }); // adopt B's L2 rules
-team.on('goal', ({ goal }) => { if (goal) agent.addMissionGoal(goal); }); // weigh B's L1 goals
+// shared rules and goals from B
+team.on('rule', ({ rule }) => { if (rule) agent.applyRule(rule); });
+team.on('goal', ({ goal }) => { if (goal) agent.addMissionGoal(goal); });
 
 agent.start();
 team.start();

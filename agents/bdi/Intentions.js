@@ -1,15 +1,12 @@
-// Option scoring for deliberation: pure functions of (state, beliefs) that answer
-// "best parcel / delivery zone / spawn zone / explore target right now?".
+// option scoring
 
 import { manhattan, getClosest } from '../common/geometry.js';
 import { BLACKLIST_TTL_MS, CONGESTION_DECAY_MS, RACE_LOSS_MARGIN, DEFAULT_MOVE_MS } from './BdiBeliefs.js';
 
-const FAR_TRIP_STEPS         = 8;    // a delivery beyond this many steps is "expensive"
-const ACCUMULATE_PATIENCE_MS = 5000; // how long to keep gathering before the long trip
+const FAR_TRIP_STEPS         = 8;
+const ACCUMULATE_PATIENCE_MS = 5000;
 
-// Best free parcel by reward-per-effort. When carrying, score by the extra detour
-// to grab it on the way to delivery; discounted if an enemy is closer or the tile
-// is contested. excludeTile lets the relay collector ignore the handoff pile.
+// best parcel
 export function getBestParcel(state, beliefs, { excludeTile = null } = {}) {
     const carrying = state.carrying;
     const isCarrying = carrying.length > 0;
@@ -29,8 +26,7 @@ export function getBestParcel(state, beliefs, { excludeTile = null } = {}) {
         const blacklistedAt = beliefs.blacklistedTargets.get(p.id);
         if (blacklistedAt && now - blacklistedAt < BLACKLIST_TTL_MS) continue;
 
-        // reward_filter: an over-cap parcel is only worth grabbing if rewards decay
-        // (then it becomes deliverable); otherwise it's undeliverable, so skip it
+        // reward filter
         if (maxReward != null && (p.reward || 0) > maxReward && !canDecay) continue;
 
         let distToParcel = manhattan(state.me, p);
@@ -39,11 +35,12 @@ export function getBestParcel(state, beliefs, { excludeTile = null } = {}) {
         let reward = beliefs.expectedRewardAt
             ? beliefs.expectedRewardAt(p, distToParcel, state)
             : (p.reward || 1);
-        if (maxReward != null && reward > maxReward) reward = maxReward; // over-cap caps at the cap
+        if (maxReward != null && reward > maxReward) reward = maxReward;
         if (reward <= 0) continue;
         let score;
 
         if (isCarrying && targetDeliveryZone) {
+            // detour scoring
             const directPath   = manhattan(state.me, targetDeliveryZone);
             const pathWithDetour = manhattan(state.me, p) + manhattan(p, targetDeliveryZone);
             let detourCost = pathWithDetour - directPath;
@@ -55,8 +52,7 @@ export function getBestParcel(state, beliefs, { excludeTile = null } = {}) {
             score = reward / (distToParcel + distToDelivery);
         }
 
-        // competition: down-weight parcels another agent will reach first (this also
-        // drives implicit team division — each commits to what it's closest to)
+        // race factor
         let raceMul = 1;
         for (const a of state.agents.values()) {
             const ad = manhattan(a, p);
@@ -65,6 +61,7 @@ export function getBestParcel(state, beliefs, { excludeTile = null } = {}) {
         }
         score *= raceMul;
 
+        // congestion factor
         const cong = beliefs.congestionMap?.get(`${Math.round(p.x)},${Math.round(p.y)}`);
         if (cong) {
             const age = now - cong.lastSeen;
@@ -83,8 +80,7 @@ export function getBestParcel(state, beliefs, { excludeTile = null } = {}) {
     return best;
 }
 
-// Nearest zone normally; with delivery_zone_reward rules, the zone maximising net
-// value `carriedValue * multiplier - distance` (0x zones skipped if avoidable).
+// best delivery zone
 export function getBestDeliveryZone(state, beliefs) {
     const zones = state.deliveryZones;
     if (!zones || zones.length === 0) return null;
@@ -109,21 +105,20 @@ export function getBestDeliveryZone(state, beliefs) {
     return best || getClosest(state.me, zones);
 }
 
-// Should we head to a delivery zone now rather than chase `candidate`?
+// deliver-now decision
 export function shouldDeliverNow(state, beliefs, candidate) {
     const carrying = state.carrying;
     if (carrying.length === 0) return false;
     if (carrying.length >= state.config.capacity) return true;
 
-    // delivery_stack (bonus sizes): need at least the smallest bonus group before
-    // heading in; below that keep collecting
+    // stack rules
     const bonusNs = (beliefs.constraints?.deliveryStacks || [])
         .filter(s => s.multiplier > 1).map(s => s.n);
     if (bonusNs.length && carrying.length < Math.min(...bonusNs)) {
         return candidate ? false : true;
     }
 
-    // reward_filter: go in to catch an over-cap parcel just as it decays below cap
+    // reward cap + decay timing
     const maxR = beliefs.constraints?.parcelRewardMax;
     if (maxR != null && beliefs.decayPerMs > 0) {
         const overCap = carrying.filter(p => (p.reward || 0) > maxR);
@@ -138,8 +133,7 @@ export function shouldDeliverNow(state, beliefs, candidate) {
     }
 
     if (!candidate) {
-        // nothing in sight: deliver — unless we have spare room and the trip is far,
-        // then linger near the spawns a bit to gather a fuller load (bounded)
+        // lingering
         const zone = getClosest(state.me, state.deliveryZones);
         const tripSteps = zone ? manhattan(state.me, zone) : 0;
         const sincePickup = Date.now() - (beliefs.lastPickupAt || 0);
@@ -151,9 +145,9 @@ export function shouldDeliverNow(state, beliefs, candidate) {
         return true;
     }
 
-    // no decay model -> keep collecting
     if (!beliefs.expectedRewardAt || !beliefs.decayPerMs || beliefs.decayPerMs <= 0) return false;
 
+    // decay trade-off
     const target = getClosest(state.me, state.deliveryZones);
     if (!target) return false;
 
@@ -167,8 +161,7 @@ export function shouldDeliverNow(state, beliefs, candidate) {
     return candidateGain < decayOnCarried + Math.max(1, carriedSum * 0.05);
 }
 
-// Best spawn zone to patrol: near, not crowded, not recently checked. null if every
-// zone scores worse than a crowd-adjusted cutoff (caller then explores).
+// best spawn zone
 export function getBestSpawnZone(state, beliefs) {
     if (state.spawnZones.length === 0) return null;
 
@@ -198,6 +191,7 @@ export function getBestSpawnZone(state, beliefs) {
             if (age < CONGESTION_DECAY_MS) contested = cong.count * (1 - age / CONGESTION_DECAY_MS);
         }
 
+        // recency
         const lastCheck = beliefs.lastChecked.get(key) || 0;
         const since = now - lastCheck;
         let recencyPenalty;
@@ -221,7 +215,7 @@ export function getBestSpawnZone(state, beliefs) {
     return bestScore > cutoff ? null : bestZone;
 }
 
-// A random reachable tile outside current vision, for exploration.
+// explore target
 export function getRandomExploreTarget(state) {
     const visionRange = state.config.vision || 5;
     const candidates = [];

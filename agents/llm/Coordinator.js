@@ -1,9 +1,7 @@
 const READY_TIMEOUT_MS = 30000;
 const HOLD_AFTER_BOTH_MS = 2000;
 
-// Agent B's L3 orchestration: turns a coordination effect into directives for
-// Agent A (over the team layer) and Agent B's own BDI, tracks readiness, and
-// reports back to the mission-agent.
+// L3 orchestration
 export class Coordinator {
 
     constructor({ client, bdi, team }) {
@@ -16,6 +14,7 @@ export class Coordinator {
 
     handle(effect, fromId) {
         if (Number.isFinite(effect.reward) && effect.reward <= 0) {
+            // trap
             console.log(`[coord] reward ${effect.reward} <= 0 — ignoring coordination mission.`);
             return;
         }
@@ -29,8 +28,7 @@ export class Coordinator {
         }
     }
 
-    // --- Red light / green light --------------------------------------------
-
+    // red light
     _redLight(e, fromId) {
         const parity = e.parity === 'even' ? 'even' : 'odd';
         this.active = { task: 'red_light', fromId, parity, waitingForGo: true };
@@ -41,6 +39,7 @@ export class Coordinator {
 
     isAwaitingGo() { return !!(this.active && this.active.task === 'red_light' && this.active.waitingForGo); }
 
+    // green light
     go(fromId) {
         if (!this.isAwaitingGo()) return;
         const a = this.active;
@@ -53,8 +52,7 @@ export class Coordinator {
         this.active = null;
     }
 
-    // --- Relay: A collects & hands off, B delivers --------------------------
-
+    // relay
     _relay(e, fromId) {
         const handoff = this._pickHandoffTile();
         if (!handoff) {
@@ -68,7 +66,7 @@ export class Coordinator {
         if (fromId) this.client.say(fromId, `relay set up: collecting and delivering via handoff (${handoff.x},${handoff.y})`).catch(() => {});
     }
 
-    // a walkable, non-delivery tile next to a central delivery zone
+    // handoff tile selection
     _pickHandoffTile() {
         const st = this.client.state;
         const zones = st.deliveryZones || [];
@@ -92,8 +90,7 @@ export class Coordinator {
         return null;
     }
 
-    // --- Rendezvous: both agents within `dist` of (x,y), waiting ------------
-
+    // rendezvous
     _rendezvous(e, fromId) {
         const x = Number(e.x), y = Number(e.y);
         const dist = Number.isFinite(Number(e.dist)) ? Number(e.dist) : 3;
@@ -121,6 +118,7 @@ export class Coordinator {
         if (s.state === 'ready') { this.active.mateReady = true; this._checkBothReady(); }
     }
 
+    // both ready -> notify + release
     _checkBothReady() {
         const a = this.active;
         if (!a || a.done) return;

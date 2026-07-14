@@ -23,9 +23,7 @@ Each returned mission must be SELF-CONTAINED (keep its own coordinates, numbers
 and rewards). Output ONLY a JSON array of strings — one element if there is just
 one mission. No prose.`.trim();
 
-// Agent B's LLM layer: interprets each special mission (memory -> ReAct planner ->
-// decision) and routes it (answer / goal / rule / coordination). The BDI core does
-// the moving; the deterministic parsers are only a fallback when the LLM fails.
+// llm layer: interpret -> decide -> route
 export class LlmAgent {
 
     constructor({ client, bdi, llm, coordinator = null, team = null }) {
@@ -38,7 +36,6 @@ export class LlmAgent {
         this.planner = new LlmPlanner(llm, client);
     }
 
-    // A message may carry several missions; split and handle each in turn.
     async handleMessage(message, fromId = null) {
         const text = typeof message === 'string'
             ? message : (message?.mission ?? message?.text ?? JSON.stringify(message));
@@ -51,8 +48,7 @@ export class LlmAgent {
         }
     }
 
-    // Heuristic split first; then ask the LLM to split by meaning any part that may
-    // join missions with "and"/"also"/"then" (keeps single "…and…" missions whole).
+    // mission segmentation
     async segment(text) {
         const base = splitMissions(text);
         const out = [];
@@ -83,7 +79,7 @@ export class LlmAgent {
     async handleMission(mission, fromId = null) {
         console.log(`[llm] mission received: "${mission}"`);
 
-        // while a red-light task is parked, a short "go" cue releases both agents
+        // green-light shortcut
         if (this.coordinator && this.coordinator.isAwaitingGo()
             && /^(go|green ?light|move|proceed|start)\b/i.test(String(mission).trim())) {
             console.log('[llm] green-light cue received — releasing the red-light hold.');
@@ -92,7 +88,7 @@ export class LlmAgent {
 
         let decision = await this.planner.plan(mission, this.memory.context()).catch(() => null);
 
-        // fallback to the deterministic parsers if the LLM gave nothing usable
+        // fallback parser
         if (!decision || !decision.kind) {
             const coord = detectCoordination(mission);
             const rule  = !coord && detectRule(mission);
@@ -106,6 +102,7 @@ export class LlmAgent {
 
         this.memory.remember(mission, decision);
 
+        // decision routing
         switch (decision.kind) {
             case 'answer': return this._doAnswer(decision, fromId);
             case 'goal':   return this._doGoal(decision, fromId);
@@ -117,6 +114,7 @@ export class LlmAgent {
         }
     }
 
+    // answer
     async _doAnswer(decision, fromId) {
         const answer = String(decision.effect?.text ?? '');
         console.log(`[llm] answer: ${answer}`);
@@ -124,10 +122,12 @@ export class LlmAgent {
         return answer;
     }
 
+    // goal
     _doGoal(decision, fromId) {
         const e = decision.effect || {};
         const reward = Number(e.reward);
         if (Number.isFinite(reward) && reward <= 0) {
+            // trap
             console.log(`[llm] goal payoff is ${reward} (<= 0) — dropping it (trap).`);
             return;
         }
@@ -150,6 +150,7 @@ export class LlmAgent {
         else console.log('[llm] goal handed to the BDI core, which will weigh it against normal play.');
     }
 
+    // coordination
     _doCoordination(decision, fromId) {
         if (!this.coordinator) {
             console.log('[llm] coordination mission but no Coordinator wired — ignoring.');
@@ -159,6 +160,7 @@ export class LlmAgent {
         return this.coordinator.handle(decision.effect || {}, fromId);
     }
 
+    // rule
     _doRule(decision, mission) {
         const e = decision.effect || {};
         let applied = e.rule && this.bdi.applyRule(e) ? e : null;
@@ -174,8 +176,7 @@ export class LlmAgent {
         }
     }
 
-    // returns null for an off-grid / non-walkable tile, so an impossible goal is
-    // never injected
+    // target validation
     _resolveTarget(effect) {
         if (Number.isFinite(effect.x) && Number.isFinite(effect.y)) {
             const x = Math.round(effect.x), y = Math.round(effect.y);

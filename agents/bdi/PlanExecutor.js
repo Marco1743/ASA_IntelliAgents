@@ -1,12 +1,11 @@
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-const MOVE_RETRIES  = 2;   // move attempts before giving up to a reroute
-const MOVE_RETRY_MS = 120; // pause between attempts (handles a brief tile lock)
-const STUCK_WAIT_MS = 150; // brief pause when an enemy blocks the next tile
-const STUCK_LIMIT   = 3;   // consecutive blocks before rerouting around it
+const MOVE_RETRIES  = 2;
+const MOVE_RETRY_MS = 120;
+const STUCK_WAIT_MS = 150;
+const STUCK_LIMIT   = 3;
 
-// Executes one step of the committed plan per call (pick_up / put_down /
-// relay_drop / move). Returns 'done' | 'wait' | 'stuck' | 'failed'.
+// plan execution, one step per call
 export class PlanExecutor {
 
     constructor(client, beliefs) {
@@ -14,6 +13,7 @@ export class PlanExecutor {
         this.beliefs = beliefs;
     }
 
+    // move retry
     async resilientMove(direction, maxRetries = MOVE_RETRIES) {
         for (let i = 0; i < maxRetries; i++) {
             const result = await this.client.move(direction);
@@ -28,6 +28,7 @@ export class PlanExecutor {
         const plan = this.beliefs.currentPlan;
         if (!plan) return 'failed';
 
+        // pick up
         if (step === 'pick_up') {
             const picked = await this.client.pickup();
             const p = st.parcels.get(target.id);
@@ -38,16 +39,14 @@ export class PlanExecutor {
             return 'done';
         }
 
+        // put down
         if (step === 'put_down') {
-            // ids = which carried parcels to drop now (reward_filter / stacks):
-            // null -> drop all, [] -> drop none yet
             const ids = this.beliefs.deliverySet(st);
             if (ids && ids.length === 0) {
                 await sleep(200);
                 return 'wait';
             }
             const dropped = await this.client.putdown(ids || undefined);
-            // delete by the server's reported dropped list (truth), to avoid desync
             const droppedIds = (Array.isArray(dropped) && dropped.length && dropped[0] && dropped[0].id !== undefined)
                 ? new Set(dropped.map(p => p.id))
                 : (ids ? new Set(ids) : null);
@@ -63,9 +62,8 @@ export class PlanExecutor {
             return 'done';
         }
 
+        // relay drop
         if (step === 'relay_drop') {
-            // drop the whole load on the current (handoff) tile for the teammate;
-            // not a delivery, so no score here
             const dropped = await this.client.putdown();
             const droppedIds = (Array.isArray(dropped) && dropped.length && dropped[0] && dropped[0].id !== undefined)
                 ? new Set(dropped.map(p => p.id)) : null;
@@ -81,6 +79,7 @@ export class PlanExecutor {
             return 'done';
         }
 
+        // move
         let tx = Math.round(st.me.x);
         let ty = Math.round(st.me.y);
         if (step === 'up')    ty += 1;
@@ -88,6 +87,7 @@ export class PlanExecutor {
         if (step === 'left')  tx -= 1;
         if (step === 'right') tx += 1;
 
+        // blocked by agent
         for (const a of st.agents.values()) {
             if (Math.round(a.x) === tx && Math.round(a.y) === ty) {
                 plan.stuckCount = (plan.stuckCount || 0) + 1;
@@ -105,6 +105,7 @@ export class PlanExecutor {
 
         const ok = await this.resilientMove(step);
         if (!ok) {
+            // failed move -> obstacle
             console.log(`[bdi] move failed: ${step}, recalculating...`);
             this.beliefs.currentPlan = null;
             this.beliefs.obstacles.set(`${tx},${ty}`, Date.now());

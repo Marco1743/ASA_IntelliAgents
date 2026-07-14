@@ -1,0 +1,285 @@
+{
+  "map": "26c1_1",
+  "startedAt": "2026-07-08T21:54:53.205Z",
+  "l1": [
+    {
+      "mission": "Calculate 5*5",
+      "sentAt": 7339,
+      "checks": [
+        {
+          "name": "answer=25",
+          "pass": true,
+          "at": 3465,
+          "line": "[llm] answer: 25"
+        }
+      ],
+      "decisionMs": 3465,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: answer — calculate 5*5"
+    },
+    {
+      "mission": "What is the capital of Italy? Send the answer to the agent who sent the prompt",
+      "sentAt": 10912,
+      "checks": [
+        {
+          "name": "answer=Rome",
+          "pass": true,
+          "at": 3030,
+          "line": "[llm] answer: Rome"
+        }
+      ],
+      "decisionMs": 3030,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: answer — capital of Italy"
+    },
+    {
+      "mission": "Move to coordinate (20,4) and you get +50pts",
+      "sentAt": 14000,
+      "checks": [
+        {
+          "name": "goal-queued",
+          "pass": true,
+          "at": 5470,
+          "line": "[bdi] mission goal queued: g1 goto(20,4) reward=50"
+        },
+        {
+          "name": "goal-done",
+          "pass": true,
+          "at": 8841,
+          "line": "[bdi] mission goal done: move to (20,4) for +50pts at (20,4)"
+        }
+      ],
+      "decisionMs": 5470,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: goal — move to (20,4) for +50pts"
+    },
+    {
+      "mission": "Move to x=4*2 y=(1+3)*3 to get -10pts",
+      "sentAt": 22985,
+      "checks": [
+        {
+          "name": "trap-dropped",
+          "pass": true,
+          "at": 6241,
+          "line": "[llm] goal payoff is -10 (<= 0) — dropping it (trap)."
+        }
+      ],
+      "decisionMs": 6241,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: goal — move to (8,12) for -10pts"
+    },
+    {
+      "mission": "Drop a package in the leftmost tile to get 5pt",
+      "sentAt": 29373,
+      "checks": [
+        {
+          "name": "dropgoal-queued",
+          "pass": true,
+          "at": 22026,
+          "line": "[bdi] mission goal queued: g2 drop_at(14,10) reward=5"
+        }
+      ],
+      "decisionMs": 22025,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: goal — drop package at leftmost delivery zone for 5pts"
+    }
+  ],
+  "l2": [
+    {
+      "mission": "Deliver stacks of exactly 3 parcels at a time to double the reward",
+      "sentAt": 51452,
+      "checks": [
+        {
+          "name": "rule-stack3",
+          "pass": true,
+          "at": 5015,
+          "line": "[bdi] L2 rule applied: {\"avoidTiles\":[],\"parcelRewardMax\":null,\"deliveryZoneRewards\":[],\"deliveryStacks\":[{\"n\":3,\"multiplier\":2}]}"
+        },
+        {
+          "name": "delivers-in-3",
+          "pass": true,
+          "at": 5772,
+          "line": "[bdi] delivery at (14,10): requested 3, server dropped 3"
+        }
+      ],
+      "decisionMs": 5014,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: rule — deliver stacks of 3 parcels to double reward"
+    },
+    {
+      "mission": "Every time you deliver in (14,10) or (34,20) you get 5x pts than in a regular delivery tile",
+      "sentAt": 57315,
+      "checks": [
+        {
+          "name": "rule-zone5x",
+          "pass": true,
+          "at": 7180,
+          "line": "[bdi] L2 rule applied: {\"avoidTiles\":[],\"parcelRewardMax\":null,\"deliveryZoneRewards\":[{\"x\":14,\"y\":10,\"multiplier\":5},{\"x\":34,\"y\":20,\"multiplier\":5}],\"deliveryStacks\":[{\"n\":3,\"multiplier\":2}]}"
+        }
+      ],
+      "decisionMs": 7180,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: rule — deliver in (14,10) or (34,20) for 5x reward"
+    },
+    {
+      "mission": "If you deliver parcels with a score higher than 10, you get no reward.",
+      "sentAt": 64613,
+      "checks": [
+        {
+          "name": "rule-cap10",
+          "pass": true,
+          "at": 5837,
+          "line": "[bdi] L2 rule applied: {\"avoidTiles\":[],\"parcelRewardMax\":10,\"deliveryZoneRewards\":[{\"x\":14,\"y\":10,\"multiplier\":5},{\"x\":34,\"y\":20,\"multiplier\":5}],\"deliveryStacks\":[{\"n\":3,\"multiplier\":2}]}"
+        }
+      ],
+      "decisionMs": 5837,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: rule — filter parcels with reward > 10"
+    },
+    {
+      "mission": "Do not go through tile (13,1) otherwise you lose 50pts.",
+      "sentAt": 70478,
+      "checks": [
+        {
+          "name": "rule-avoid",
+          "pass": true,
+          "at": 3413,
+          "line": "[bdi] L2 rule applied: {\"avoidTiles\":[{\"x\":13,\"y\":1,\"penalty\":50}],\"parcelRewardMax\":10,\"deliveryZoneRewards\":[{\"x\":14,\"y\":10,\"multiplier\":5},{\"x\":34,\"y\":20,\"multiplier\":5}],\"deliveryStacks\":[{\"n\":3,\"multiplier\":2}]}"
+        }
+      ],
+      "decisionMs": 3413,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: rule — avoid tile (13,1) to prevent -50pt penalty"
+    },
+    {
+      "mission": "Calculate 7*3 and deliver stacks of exactly 5 parcels at a time to get 0.3 of the standard reward",
+      "sentAt": 73983,
+      "checks": [
+        {
+          "name": "split-2",
+          "pass": true,
+          "at": 970,
+          "line": "[llm] message holds 2 missions — handling each in turn."
+        },
+        {
+          "name": "answer=21",
+          "pass": true,
+          "at": 3764,
+          "line": "[llm] answer: 21"
+        },
+        {
+          "name": "rule-stack5",
+          "pass": true,
+          "at": 6737,
+          "line": "[bdi] L2 rule applied: {\"avoidTiles\":[{\"x\":13,\"y\":1,\"penalty\":50}],\"parcelRewardMax\":10,\"deliveryZoneRewards\":[{\"x\":14,\"y\":10,\"multiplier\":5},{\"x\":34,\"y\":20,\"multiplier\":5}],\"deliveryStacks\":[{\"n\":3,\"multiplier\":2},{\"n\":5,\"multiplier\":0.3}]}"
+        }
+      ],
+      "decisionMs": 3764,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: answer — calculate 7*3"
+    }
+  ],
+  "l3": [
+    {
+      "test": "discovery",
+      "passB": true,
+      "passA": true,
+      "ms": 81960
+    },
+    {
+      "mission": "Move both agents to the neighborhood of position (20,4) within a maximum distance of 3, and have them wait for each other. You will receive 500pts.",
+      "sentAt": 82031,
+      "checks": [
+        {
+          "name": "rendezvous-start",
+          "pass": true,
+          "at": 10177,
+          "line": "[coord] rendezvous near (20,4) dist<=3: directed A and self to meet."
+        },
+        {
+          "name": "both-arrived",
+          "pass": true,
+          "at": 15949,
+          "line": "[coord] BOTH agents have arrived — rendezvous achieved."
+        },
+        {
+          "name": "released",
+          "pass": true,
+          "at": 17951,
+          "line": "[coord] released both agents — back to normal play."
+        },
+        {
+          "name": "A-ready",
+          "pass": true,
+          "at": 15948
+        }
+      ],
+      "decisionMs": 10176,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: coordination — rendezvous at (20,4)"
+    },
+    {
+      "mission": "If a parcel is initially picked up by one agent and later delivered by the other agent, you will receive a 200 points bonus.",
+      "sentAt": 104008,
+      "checks": [
+        {
+          "name": "relay-active",
+          "pass": true,
+          "at": 5983,
+          "line": "[coord] relay active: A = collector, B = deliverer, handoff tile (18,15)."
+        }
+      ],
+      "decisionMs": 5982,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: coordination — relay parcel for 200pts bonus",
+      "relayStats": {
+        "handoffEvents": 21,
+        "parcelsHandedOff": 55,
+        "parcelsDeliveredByB": 44
+      }
+    },
+    {
+      "mission": "All agents must move to an odd-numbered row and wait for our message before moving again, as in a 'red light, green light' game. 700 points bonus.",
+      "sentAt": 260019,
+      "checks": [
+        {
+          "name": "redlight-start",
+          "pass": true,
+          "at": 11417,
+          "line": "[coord] red light: both agents to the nearest odd row, then waiting for the 'go' message."
+        },
+        {
+          "name": "B-frozen",
+          "pass": true,
+          "at": 11625
+        },
+        {
+          "name": "A-frozen",
+          "pass": true,
+          "at": 11687
+        },
+        {
+          "name": "green-light",
+          "pass": true
+        },
+        {
+          "name": "A-resumed",
+          "pass": true
+        }
+      ],
+      "decisionMs": 11417,
+      "viaFallback": false,
+      "decisionLine": "[llm] decision: coordination — move to odd row and wait"
+    }
+  ],
+  "meta": {
+    "missionsSent": 13,
+    "viaLLM": 10,
+    "viaFallback": 0,
+    "llmLatencyMs": {
+      "min": 3030,
+      "max": 22025,
+      "avg": 6544
+    }
+  }
+}

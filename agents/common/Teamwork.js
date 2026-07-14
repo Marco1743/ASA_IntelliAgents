@@ -1,23 +1,19 @@
 import { EventEmitter } from 'node:events';
 
-const HELLO_INTERVAL_MS  = 1000;  // re-announce until the teammate is found
-const HELLO_TIMEOUT_MS   = 30000; // give up actively shouting after this
-const STATE_INTERVAL_MS  = 1000;  // belief-exchange heartbeat
+const HELLO_INTERVAL_MS  = 1000;
+const HELLO_TIMEOUT_MS   = 30000;
+const STATE_INTERVAL_MS  = 1000;
 
-// Team layer (L3) shared by both players, on top of the game's say/shout/onMsg:
-// discovery via a shared TEAM_SECRET handshake, periodic belief exchange, and
-// directives. Every team message carries `_team:<secret>`, so ingest() consumes
-// team traffic and returns false for real missions.
+// team layer
 export class Teamwork extends EventEmitter {
 
-    // opts: { role: 'A'|'B', secret: shared team password }
     constructor(client, { role, secret }) {
         super();
         this.client = client;
         this.role   = role;
         this.secret = secret;
         this.myStatus = 'playing';
-        this.teammate = null; // { id, role, x, y, carrying, score, status, lastSeen }
+        this.teammate = null;
         this._timers = [];
     }
 
@@ -40,10 +36,7 @@ export class Teamwork extends EventEmitter {
 
     stop() { for (const t of this._timers) clearInterval(t); this._timers = []; }
 
-    // --- Inbound -----------------------------------------------------------
-
-    // returns true if the message was team-internal (consumed), false if it is a
-    // normal mission the caller should handle
+    // inbound filter
     ingest(fromId, fromName, msg, replyAck) {
         if (!msg || typeof msg !== 'object' || msg._team !== this.secret) return false;
 
@@ -76,13 +69,14 @@ export class Teamwork extends EventEmitter {
         return true;
     }
 
+    // handshake
     _onHello(msg) {
         const known = this.teammate && this.teammate.id === msg.id;
         this._updateTeammate(msg, { role: msg.role });
         if (!known) {
             console.log(`[team:${this.role}] teammate found: ${msg.role} (${msg.id})`);
             this.emit('teammate', this.teammate);
-            this._announce(); // reply so the other side learns us promptly
+            this._announce();
         }
     }
 
@@ -94,9 +88,7 @@ export class Teamwork extends EventEmitter {
         Object.assign(this.teammate, fields, { lastSeen: Date.now() });
     }
 
-    // --- Outbound ----------------------------------------------------------
-
-    // directed if we know the teammate, else broadcast so the handshake can complete
+    // outbound
     _send(obj) {
         const me = this.client.state.me;
         if (me.id === undefined || me.id === null) return;
@@ -107,25 +99,25 @@ export class Teamwork extends EventEmitter {
 
     _announce() { this._send({ _t: 'hello', role: this.role }); }
 
+    // state exchange
     broadcastState() {
         const st = this.client.state;
         this._send({ _t: 'state', x: Math.round(st.me.x), y: Math.round(st.me.y),
                      carrying: st.carrying.length, score: st.me.score, status: this.myStatus });
     }
 
-    sendCoord(cmd, payload = {}) { this._send({ _t: 'coord', cmd, ...payload }); }   // B -> A: command
-    sendRule(rule) { this._send({ _t: 'rule', rule }); }                            // B -> A: L2 rule
-    sendGoal(goal) { this._send({ _t: 'goal', goal }); }                            // B -> A: L1 goal
+    sendCoord(cmd, payload = {}) { this._send({ _t: 'coord', cmd, ...payload }); }
+    sendRule(rule) { this._send({ _t: 'rule', rule }); }
+    sendGoal(goal) { this._send({ _t: 'goal', goal }); }
 
-    sendStatus(state) {                                                             // A -> B: progress
+    sendStatus(state) {
         const st = this.client.state;
         this._send({ _t: 'status', state, x: Math.round(st.me.x), y: Math.round(st.me.y), carrying: st.carrying.length });
     }
 
-    sendSignal(name) { this._send({ _t: 'signal', name }); }                        // one-off (e.g. 'go')
+    sendSignal(name) { this._send({ _t: 'signal', name }); }
 
-    // true if the team-mate is closer to `goal` (ties -> lower id), so this agent
-    // yields and lets it commit. False when we have no team-mate (single-agent).
+    // closest commits
     shouldYieldGoal(goal) {
         const mate = this.teammate;
         const me = this.client.state.me;

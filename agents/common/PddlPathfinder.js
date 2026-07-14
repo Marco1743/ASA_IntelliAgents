@@ -1,10 +1,7 @@
 import { onlineSolver } from '@unitn-asa/pddl-client';
 import { DOMAIN_STRING, buildProblem, actionToDirection } from './pddlModel.js';
 
-// PDDL motion planner using the ONLINE solver (kept for comparison via
-// PDDL_SOLVER=online; the default is the local FastDownwardPathfinder). The HTTP
-// solver is slow, so we race it against a timeout and return null on timeout.
-// Same findPath contract as Pathfinder: -> directions | [] (already there) | null.
+// pddl planner (online solver)
 export class PddlPathfinder {
 
     constructor(map, opts = {}) {
@@ -25,10 +22,11 @@ export class PddlPathfinder {
 
         const problem = buildProblem(this.map, sx, sy, tx, ty, opts);
 
+        // solve with timeout
         let plan;
         try {
             const solverP = onlineSolver(this._domain, problem);
-            solverP.catch(() => {}); // avoid unhandled rejection if the timeout wins
+            solverP.catch(() => {});
             plan = await Promise.race([
                 solverP,
                 new Promise((_, reject) => setTimeout(

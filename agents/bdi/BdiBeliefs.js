@@ -3,21 +3,19 @@ import { manhattan } from '../common/geometry.js';
 export const OBSTACLE_TTL_MS      = 3000;
 export const BLACKLIST_TTL_MS     = 15000;
 
-export const CONGESTION_DECAY_MS  = 30000; // how long a crowded-tile memory lasts
-export const CONGESTION_COUNT_MAX = 50;    // cap so a parked enemy can't dominate
-export const CONGESTION_MAX_COST  = 6;     // max pathfinding penalty from congestion
-export const RACE_LOSS_MARGIN     = 1;     // enemy must be this much closer to "win"
-export const ENEMY_ON_TILE_COST   = 20;    // pathfinding cost: tile an enemy occupies
-export const ENEMY_ADJ_COST       = 4;     // ... a tile next to an enemy
-export const ENEMY_PREDICTED_COST = 8;     // ... the tile an enemy seems headed to
+export const CONGESTION_DECAY_MS  = 30000;
+export const CONGESTION_COUNT_MAX = 50;
+export const CONGESTION_MAX_COST  = 6;
+export const RACE_LOSS_MARGIN     = 1;
+export const ENEMY_ON_TILE_COST   = 20;
+export const ENEMY_ADJ_COST       = 4;
+export const ENEMY_PREDICTED_COST = 8;
 
-export const DEFAULT_MOVE_MS       = 500;  // assumed ms per move step until config says otherwise
-export const MIN_DECAY_BASELINE_MS = 1500; // need this long an observation window to trust a rate
-export const MAX_DECAY_PER_MS      = 0.01; // clamp: reject implausible rates (>10 pts/sec)
+export const DEFAULT_MOVE_MS       = 500;
+export const MIN_DECAY_BASELINE_MS = 1500;
+export const MAX_DECAY_PER_MS      = 0.01;
 
-// How many parcels to put down in one action given the active stack rules. Prefers
-// the most valuable bonus group (mult>1) that fits; else as many as possible while
-// never matching a penalty size (mult<1). 0 = hold and wait for more.
+// stack rules: how many parcels to drop in one action
 export function stackDeliveryCount(eligibleCount, stacks, moreComing) {
     const bonus = stacks.filter(s => s.multiplier > 1);
     const penaltyNs = new Set(stacks.filter(s => s.multiplier < 1).map(s => s.n));
@@ -34,32 +32,31 @@ export function stackDeliveryCount(eligibleCount, stacks, moreComing) {
     return count;
 }
 
-// The BDI agent's private memory (on top of the sensed WorldState).
+// bdi beliefs
 export class BdiBeliefs {
 
     constructor(client = null) {
         this.client             = client;
-        this.obstacles          = new Map(); // "x,y" -> timestamp of a recent failed move
-        this.blacklistedTargets = new Map(); // targetId/"x,y" -> timestamp
-        this.lastChecked        = new Map(); // spawn zone "x,y" -> last seen timestamp
-        this.congestionMap      = new Map(); // "x,y" -> { count, lastSeen }
-        this.currentPlan        = null;      // { targetId, target, steps, stuckCount }
+        this.obstacles          = new Map();
+        this.blacklistedTargets = new Map();
+        this.lastChecked        = new Map();
+        this.congestionMap      = new Map();
+        this.currentPlan        = null;
 
-        // L1 goals and L3 coordination set by the LLM layer (empty for Agent A alone).
-        this.missionGoals       = [];        // [{ id, kind, x, y, reward, fromId, summary }]
-        this.coordination       = null;      // { type:'goto_wait'|'hold'|'relay'|'red_light', ... }
+        this.missionGoals       = [];
+        this.coordination       = null;
 
-        // L2 rules (last the whole match); all empty/null leaves Agent A unchanged.
+        // L2 rules
         this.constraints = {
-            avoidTiles:          [],   // [{ x, y, penalty }]
-            parcelRewardMax:     null, // number | null
-            deliveryZoneRewards: [],   // [{ x, y, multiplier }]
-            deliveryStacks:      []    // [{ n, multiplier }] — one per size N, same N overwrites
+            avoidTiles:          [],
+            parcelRewardMax:     null,
+            deliveryZoneRewards: [],
+            deliveryStacks:      []
         };
 
-        // parcel reward decay model
-        this.parcelHistory      = new Map(); // id -> { firstSeen, firstReward, lastSeen, lastReward }
-        this.decayPerMs         = 0;         // learned reward lost per ms (0 = unknown)
+        // decay model
+        this.parcelHistory      = new Map();
+        this.decayPerMs         = 0;
         this.lastPickupAt       = 0;
 
         this.metrics = {
@@ -76,8 +73,7 @@ export class BdiBeliefs {
         }
     }
 
-    // Estimate reward decay (points/ms) from each parcel's full observation window
-    // (first sighting -> now), which averages out the 1-point quantisation; clamped.
+    // decay learning
     learnDecay(state, sensedIds, now = Date.now()) {
         for (const p of state.parcels.values()) {
             if (sensedIds && !sensedIds.has(p.id)) continue;
@@ -105,8 +101,7 @@ export class BdiBeliefs {
         }
     }
 
-    // Reward a parcel should still be worth after `steps` moves (last reward minus
-    // decay over time-since-seen + travel). Just the stored reward if decay unknown.
+    // expected reward
     expectedRewardAt(parcel, steps, state, now = Date.now()) {
         const reward = parcel.reward || 0;
         if (this.decayPerMs <= 0) return reward;
@@ -117,13 +112,13 @@ export class BdiBeliefs {
         return Math.max(decayed, 0);
     }
 
-    // Forget out-of-vision free parcels whose reward has decayed to 0 (expired).
+    // forget expired parcels
     pruneExpiredParcels(state, now = Date.now()) {
         if (this.decayPerMs <= 0) return;
         const vision = state.config.vision || 5;
         for (const [id, p] of state.parcels) {
             if (p.carriedBy) continue;
-            if (manhattan(state.me, p) < vision) continue; // trust the server for visible tiles
+            if (manhattan(state.me, p) < vision) continue;
             if (this.expectedRewardAt(p, 0, state, now) <= 0) {
                 state.parcels.delete(id);
                 this.parcelHistory.delete(id);
@@ -131,7 +126,7 @@ export class BdiBeliefs {
         }
     }
 
-    // Estimate each enemy's heading from its sub-tile position and bump congestion.
+    // enemy heading + congestion
     observeAgents(state, sensedIds = null, now = Date.now()) {
         for (const a of state.agents.values()) {
             if (sensedIds && !sensedIds.has(a.id)) continue;
@@ -150,9 +145,7 @@ export class BdiBeliefs {
         }
     }
 
-    // Soft-cost map for the pathfinder: penalise enemy tiles, their neighbours and
-    // predicted next tile, crowded tiles, and L2 avoid-tiles. Penalties (not walls)
-    // so A* still squeezes through when there is no alternative.
+    // enemy cost map
     buildEnemyCostMap(state, now = Date.now()) {
         const cost = new Map();
         const bump = (x, y, c) => {
@@ -187,10 +180,7 @@ export class BdiBeliefs {
         return cost;
     }
 
-    // Which carried parcels to drop in ONE action now (L2 rules). null -> all,
-    // [] -> none yet, [ids] -> drop exactly these. reward_filter: only parcels
-    // at/below the cap. delivery_stack: a bonus group of N, else as many as possible
-    // without matching a penalty size.
+    // delivery set (L2 rules)
     deliverySet(state) {
         const max    = this.constraints.parcelRewardMax;
         const stacks = this.constraints.deliveryStacks;
@@ -208,6 +198,7 @@ export class BdiBeliefs {
         return sorted.slice(0, count).map(p => p.id);
     }
 
+    // race check
     isRaceLost(state, target) {
         const myDist = manhattan(state.me, target);
         for (const a of state.agents.values()) {

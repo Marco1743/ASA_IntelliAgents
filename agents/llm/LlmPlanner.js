@@ -56,8 +56,7 @@ Rules of thumb:
 - Keep the payoff sign on goals. Output only ONE Action or ONE Decision per turn.
 `.trim();
 
-// ReAct loop: the LLM reasons, optionally calls read-only tools, then commits to a
-// structured decision { kind, summary, effect }. Returns the decision or null.
+// react loop
 export class LlmPlanner {
 
     constructor(llm, client, { maxIterations = 6 } = {}) {
@@ -87,6 +86,7 @@ export class LlmPlanner {
             const action = extractAction(out);
             const decisionText = extractDecision(out);
 
+            // tool call
             if (action && !decisionText) {
                 const obs = execTool(action.action, action.actionInput, this.client.state);
                 console.log(`[llm-planner] ${action.action}(${action.actionInput}) -> ${obs}`);
@@ -95,12 +95,14 @@ export class LlmPlanner {
                 continue;
             }
 
+            // decision
             const decision = decisionText && safeJsonParse(decisionText);
             if (decision && decision.kind) {
                 decision.effect = decision.effect || {};
                 return decision;
             }
 
+            // format retry
             messages.push({ role: 'user', content:
                 'Invalid format. Output exactly one Action (with Action Input) or one Decision as JSON.' });
         }

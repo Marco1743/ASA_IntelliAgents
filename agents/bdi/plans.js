@@ -1,9 +1,6 @@
-// BDI plan library: one plan per intention. A plan navigates to the target (via
-// the injected navigate callback, which runs A*/PDDL) then appends its terminal
-// action. Deliberation selects the applicable plan with selectPlan.
+// plan library
 
 class Plan {
-    // terminalAction: 'pick_up' | 'put_down' | null
     constructor(intention, terminalAction = null) {
         this.intention = intention;
         this.terminalAction = terminalAction;
@@ -13,7 +10,6 @@ class Plan {
         return intention === this.intention;
     }
 
-    // navigate: (from, target) => Promise<directions[] | null>
     async build(navigate, from, target) {
         const path = await navigate(from, target);
         if (path === null) return null;
@@ -29,6 +25,7 @@ export const ExplorePlan = new Plan('explore');
 
 const planLibrary = [PickupPlan, DeliverPlan, PatrolPlan, ExplorePlan];
 
+// plan selection
 export function selectPlan(intention) {
     return planLibrary.find(p => p.isApplicableTo(intention)) || null;
 }

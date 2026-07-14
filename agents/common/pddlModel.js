@@ -1,48 +1,45 @@
-// Shared PDDL model for grid navigation (used by both PddlPathfinder and
-// FastDownwardPathfinder): one tile = one object, position (at ?t), walkability
-// and one-way tiles -> directed (adj-* from to) facts, goal (at target). The
-// problem covers the whole walkable map; only walls, obstacles and tiles held by
-// other agents are excluded.
+// pddl model (domain + problem)
 
 import { tileBlocksFromDirection } from './geometry.js';
 
 export const DOMAIN_NAME = 'deliveroo-grid';
 
+const DIRS = ['up', 'down', 'left', 'right'];
+
+// pddl domain (navigation + sokoban crates)
 export const DOMAIN_STRING = `(define (domain ${DOMAIN_NAME})
-    (:requirements :strips)
+    (:requirements :strips :typing)
+    (:types crate tile)
     (:predicates
-        (at ?t)
-        (adj-up ?from ?to)
-        (adj-down ?from ?to)
-        (adj-left ?from ?to)
-        (adj-right ?from ?to)
+        (at ?t - tile)
+        (at-crate ?c - crate ?t - tile)
+        (clear ?t - tile)
+        (type5 ?t - tile)
+        (adj-up ?from - tile ?to - tile)
+        (adj-down ?from - tile ?to - tile)
+        (adj-left ?from - tile ?to - tile)
+        (adj-right ?from - tile ?to - tile)
     )
-    (:action move-up
-        :parameters (?from ?to)
-        :precondition (and (at ?from) (adj-up ?from ?to))
+${DIRS.map(d => `    (:action move-${d}
+        :parameters (?from - tile ?to - tile)
+        :precondition (and (at ?from) (adj-${d} ?from ?to) (clear ?to))
         :effect (and (at ?to) (not (at ?from)))
-    )
-    (:action move-down
-        :parameters (?from ?to)
-        :precondition (and (at ?from) (adj-down ?from ?to))
-        :effect (and (at ?to) (not (at ?from)))
-    )
-    (:action move-left
-        :parameters (?from ?to)
-        :precondition (and (at ?from) (adj-left ?from ?to))
-        :effect (and (at ?to) (not (at ?from)))
-    )
-    (:action move-right
-        :parameters (?from ?to)
-        :precondition (and (at ?from) (adj-right ?from ?to))
-        :effect (and (at ?to) (not (at ?from)))
-    )
+    )`).join('\n')}
+${DIRS.map(d => `    (:action push-${d}
+        :parameters (?c - crate ?from - tile ?mid - tile ?to - tile)
+        :precondition (and (at ?from) (adj-${d} ?from ?mid) (adj-${d} ?mid ?to)
+                           (at-crate ?c ?mid) (type5 ?to) (clear ?to))
+        :effect (and (at ?mid) (not (at ?from))
+                     (at-crate ?c ?to) (not (at-crate ?c ?mid))
+                     (clear ?mid) (not (clear ?to)))
+    )`).join('\n')}
 )`;
 
 export const tileName = (x, y) => `t_${x}_${y}`;
+const crateName = c => `crate_${String(c.id).replace(/[^a-zA-Z0-9_]/g, '_')}`;
 
-// map: WorldState.map ("x,y" -> tile type). Returns the (define (problem …)) text.
-export function buildProblem(map, sx, sy, tx, ty, { obstacles = null, agents = null } = {}) {
+// pddl problem
+export function buildProblem(map, sx, sy, tx, ty, { obstacles = null, agents = null, crates = null } = {}) {
     const agentBlocked = new Set();
     if (agents) {
         for (const a of agents.values()) {
@@ -56,24 +53,43 @@ export function buildProblem(map, sx, sy, tx, ty, { obstacles = null, agents = n
     const walkable = new Set();
     const objects = [];
 
+    // tile objects
     for (const [key, type] of map.entries()) {
         if (String(type) === '0') continue;
-        const [x, y] = key.split(',').map(Number);
         if (key !== startKey && key !== targetKey) {
             if (obstacles && obstacles.has(key)) continue;
             if (agentBlocked.has(key)) continue;
         }
+        const [x, y] = key.split(',').map(Number);
         const name = tileName(x, y);
         walkable.add(name);
         objects.push(name);
     }
 
+    // crate objects
+    const crateAt = new Map();
+    const crateObjects = [];
+    if (crates) {
+        for (const c of crates.values()) {
+            const cx = Math.round(c.x), cy = Math.round(c.y);
+            const key = `${cx},${cy}`;
+            if (!walkable.has(tileName(cx, cy))) continue;
+            if (crateAt.has(key)) continue;
+            crateAt.set(key, crateName(c));
+            crateObjects.push(crateName(c));
+        }
+    }
+
+    // adjacency + clear + type5 facts
     const facts = [];
     const tileTypeAt = (x, y) => map.get(`${x},${y}`);
 
     for (const name of objects) {
         const [, xs, ys] = name.split('_');
         const x = Number(xs), y = Number(ys);
+        const key = `${x},${y}`;
+        if (!crateAt.has(key)) facts.push(`(clear ${name})`);
+        if (String(tileTypeAt(x, y)).startsWith('5')) facts.push(`(type5 ${name})`);
         const candidates = [
             { dir: 'up',    nx: x,     ny: y + 1 },
             { dir: 'down',  nx: x,     ny: y - 1 },
@@ -88,17 +104,24 @@ export function buildProblem(map, sx, sy, tx, ty, { obstacles = null, agents = n
         }
     }
 
+    for (const [key, cname] of crateAt.entries()) {
+        const [x, y] = key.split(',').map(Number);
+        facts.push(`(at-crate ${cname} ${tileName(x, y)})`);
+    }
+
     facts.push(`(at ${tileName(sx, sy)})`);
+
+    const objDecl = `${objects.join(' ')} - tile`
+        + (crateObjects.length ? ` ${crateObjects.join(' ')} - crate` : '');
 
     return `(define (problem pathfind)
     (:domain ${DOMAIN_NAME})
-    (:objects ${objects.join(' ')})
+    (:objects ${objDecl})
     (:init ${facts.join(' ')})
     (:goal (at ${tileName(tx, ty)})))`;
 }
 
-// "move-up" / "move_up" -> "up"; null for anything else
 export function actionToDirection(action) {
-    const a = String(action || '').toLowerCase().replace(/^move[-_]/, '');
+    const a = String(action || '').toLowerCase().replace(/^(?:move|push)[-_]/, '');
     return (a === 'up' || a === 'down' || a === 'left' || a === 'right') ? a : null;
 }
